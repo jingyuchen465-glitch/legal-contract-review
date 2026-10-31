@@ -1,4 +1,5 @@
 const { randomUUID } = require('node:crypto');
+const { catalog } = require('./catalog');
 const rule = (id, title, instruction, severity = 'medium', tags = []) => ({ id, title, instruction, severity, tags, mandatory: true });
 const packs = [
   { pack_id: 'common', name: '通用审查标准（示例待法务确认）', scope: { level: 'common' }, rules: [
@@ -32,6 +33,24 @@ const packs = [
     rule('software-dispute', '通知送达与争议解决冲突', '核查通知方式、地址变更、合理到达机制及争议解决是否明确；识别同时约定法院诉讼与仲裁但未明确适用关系、对方单方指定地点或发送即送达可能导致的实际风险。无可追溯法条时只提出文本冲突及人工核实，不编造法律规定或断言条款无效。'),
   ] },
 ];
+// The four packs above are fixed examples used by the explicit trial-review flow.
+// Every catalog type also gets its own editable draft so a new installation has a
+// clear starting point for the company's formal standards.
+const seededTypeIds = new Set(packs.flatMap(pack => pack.scope.typeIds || []));
+const genericTypeRules = (typeId, typeName) => [
+  rule(`${typeId}-scope`, '交易范围与交付成果', `结合“${typeName}”的交易实质，核查服务或货物范围、规格、数量、交付成果、时间节点及验收标准是否明确；无法从合同确定的内容应提示法务人工确认。`, 'high'),
+  rule(`${typeId}-payment`, '价款、付款与费用', '核查金额、币种、税费、发票、付款节点、付款前提、额外费用及调价条件，识别预付款过高、付款与履约脱节或费用口径不清的风险。', 'high'),
+  rule(`${typeId}-responsibility`, '违约责任与风险分配', '核查双方违约责任、赔偿范围、责任上限、免责和第三方原因处理是否清晰且明显失衡；只说明文本风险，不直接断言条款当然无效。', 'high'),
+  rule(`${typeId}-exit`, '期限、解除与争议解决', '核查合同期限、续期、解除条件、通知期限、终止后的返还或交接、适用法律和争议解决是否完整且不存在明显冲突。'),
+];
+const catalogPacks = catalog.flatMap(category => category.types)
+  .filter(type => !seededTypeIds.has(type.id))
+  .map(type => ({
+    pack_id: `type-${type.id}`,
+    name: `${type.name}专项（待法务确认）`,
+    scope: { level: 'type', typeIds: [type.id] },
+    rules: genericTypeRules(type.id, type.name),
+  }));
 const exampleVersion = '2026-10-29.software-1';
 function examplePacks() {
   return structuredClone(packs).map(pack => ({ ...pack, id: `example:${pack.pack_id}:${exampleVersion}`, version_no: 1, state: 'example', knowledge: [] }));
@@ -42,4 +61,9 @@ async function seedDrafts(db) {
     if (!(await db('la_rule_versions').where({ pack_id: pack.pack_id }).first())) await db('la_rule_versions').insert({ id: randomUUID(), ...pack, scope: JSON.stringify(pack.scope), rules: JSON.stringify(pack.rules), knowledge: '[]', version_no: 1, state: 'draft' });
   }
 }
-module.exports = { seedDrafts, packs, examplePacks, hasExample, exampleVersion };
+async function seedCatalogDrafts(db) {
+  for (const pack of catalogPacks) {
+    if (!(await db('la_rule_versions').where({ pack_id: pack.pack_id }).first())) await db('la_rule_versions').insert({ id: randomUUID(), ...pack, scope: JSON.stringify(pack.scope), rules: JSON.stringify(pack.rules), knowledge: '[]', version_no: 1, state: 'draft' });
+  }
+}
+module.exports = { seedDrafts, seedCatalogDrafts, packs, catalogPacks, examplePacks, hasExample, exampleVersion };
