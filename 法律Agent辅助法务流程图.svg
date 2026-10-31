@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 1450" role="img" aria-labelledby="title desc">
+<title id="title">法律 Agent 辅助法务审核流程</title>
+<desc id="desc">业务提交合同，系统接收并解析分类，按照规则和模板进行 AI 初审，生成有原文证据的报告。法务人工复核，需要修改时退回业务并对新版本重新审核；复核完成后由法务确认结论，回传审批并归档。人工反馈经法务审核发布后更新规则。</desc>
+<style>
+:root{--bg:#f8fafc;--border:#cbd5e1;--text:#0f172a;--sub:#64748b}
+*{box-sizing:border-box}body{margin:0;padding:24px;background:var(--bg);color:var(--text);font-family:"Microsoft YaHei","Segoe UI",sans-serif}.diagram-canvas{width:1500px;margin:0 auto;background:#fff;border:2px solid var(--border)}svg{display:block;width:100%;height:auto}text{font-family:"Microsoft YaHei","Segoe UI",sans-serif;fill:#0f172a}.title{font-size:30px;font-weight:700}.sub{font-size:17px;fill:#64748b}.lane{font-size:22px;font-weight:700}.node{fill:#fff;stroke:#64748b;stroke-width:1.5}.human{stroke:#0f172a;stroke-width:2}.label{font-size:21px;font-weight:600}.detail{font-size:17px;fill:#475569}.edge{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#arrow)}.feedback{stroke-dasharray:8 6}.tag{font-size:16px;fill:#475569}.small{font-size:16px;fill:#64748b}@media print{body{padding:0;background:#fff}.diagram-canvas{width:100%;border:0}@page{size:A3 portrait;margin:10mm}}
+</style><defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0 0L8 4L0 8" fill="none" stroke="#475569" stroke-width="1.4"/></marker></defs>
+<text x="45" y="63" class="title">法律 Agent 辅助法务审核流程</text>
+<text x="45" y="101" class="sub">首期：独立工作台 + 钉钉接入　｜　AI 完成预审，法务确认最终结论</text>
+<line x1="45" y1="128" x2="1455" y2="128" stroke="#cbd5e1"/>
+<rect x="65" y="153" width="390" height="58" fill="#f1f5f9"/><rect x="555" y="153" width="390" height="58" fill="#f1f5f9"/><rect x="1045" y="153" width="390" height="58" fill="#f1f5f9"/>
+<text x="260" y="191" text-anchor="middle" class="lane">业务人员</text><text x="750" y="191" text-anchor="middle" class="lane">法律 Agent 系统</text><text x="1240" y="191" text-anchor="middle" class="lane">法务人员</text>
+<line x1="505" y1="225" x2="505" y2="1345" stroke="#e2e8f0"/><line x1="995" y1="225" x2="995" y2="1345" stroke="#e2e8f0"/>
+<!-- Main flow -->
+<path class="edge" d="M440 295H565"/><path class="edge" d="M750 340V405"/><path class="edge" d="M750 505V585"/><path class="edge" d="M750 700V765"/><path class="edge" d="M935 815H1050"/>
+<path class="edge" d="M565 455H440"/><text x="477" y="441" text-anchor="middle" class="tag">失败</text><path class="edge" d="M260 405V340"/>
+<path class="edge feedback" d="M1235 340V405"/><path class="edge feedback" d="M1050 455H1015V642H935"/><text x="968" y="626" text-anchor="middle" class="tag">提供依据</text>
+<path class="edge" d="M1235 865V910"/>
+<path class="edge" d="M1060 965H440"/><text x="910" y="949" class="tag">需要修改 / 补充合同</text>
+<path class="edge" d="M80 965H40V295H80"/><rect x="7" y="703" width="66" height="142" fill="#fff"/><text x="40" y="733" text-anchor="middle" class="small"><tspan x="40">提交</tspan><tspan x="40" dy="27">新版本</tspan><tspan x="40" dy="27">重新</tspan><tspan x="40" dy="27">预审</tspan></text>
+<path class="edge" d="M1235 1020V1080"/><text x="1250" y="1054" class="tag">可形成最终意见</text>
+<path class="edge" d="M1235 1170V1230"/>
+<path class="edge feedback" d="M1050 1125H935"/>
+<path class="edge feedback" d="M935 1100H970V980M970 950V830M970 800V295H1050"/>
+<!-- Business -->
+<rect class="node" x="80" y="250" width="360" height="90"/>
+<text x="100" y="284" class="label">① 提交合同与业务背景</text><text x="100" y="315" class="detail">钉钉审批附件 / 工作台手动上传</text>
+<rect class="node" x="80" y="405" width="360" height="100"/>
+<text x="100" y="442" class="label">补充文件或重新上传</text><text x="100" y="474" class="detail">文件损坏、加密、解析失败等</text>
+<rect class="node" x="1050" y="405" width="370" height="100"/>
+<text x="1070" y="440" class="label">合同类型对应的审核依据</text><text x="1070" y="472" class="detail">法务维护：规则、模板、历史案例</text>
+<rect class="node" x="80" y="915" width="360" height="100"/>
+<text x="100" y="952" class="label">业务协商并修改合同</text><text x="100" y="984" class="detail">按法务意见补充材料或更新条款</text>
+<!-- System -->
+<rect class="node" x="565" y="250" width="370" height="90"/>
+<text x="585" y="284" class="label">② 接收合同，建立审核任务</text><text x="585" y="315" class="detail">保存原件、来源及版本，防止重复处理</text>
+<rect class="node" x="565" y="405" width="370" height="100"/>
+<text x="585" y="442" class="label">③ 解析文本与合同分类</text><text x="585" y="474" class="detail">PDF / Word；扫描件 OCR；分类可纠正</text>
+<rect class="node" x="565" y="585" width="370" height="115"/>
+<text x="585" y="620" class="label">④ AI 自动初审</text><text x="585" y="650" class="detail">通用检查 + 分类规则 + 模板对照</text><text x="585" y="678" class="detail">识别缺失条款、风险及关键字段问题</text>
+<rect class="node" x="565" y="765" width="370" height="100"/>
+<text x="585" y="802" class="label">⑤ 生成预审报告</text><text x="585" y="833" class="detail">风险等级、原文位置、理由、修改建议</text>
+<!-- Human review -->
+<rect class="node human" x="1050" y="765" width="370" height="100"/>
+<text x="1070" y="802" class="label">⑥ 法务人工复核</text><text x="1070" y="833" class="detail">核实 AI 意见，补充漏项，纠正误判</text>
+<path class="node human" d="M1235 910L1410 965L1235 1020L1060 965Z"/>
+<text x="1235" y="972" text-anchor="middle" class="label">复核后如何处理？</text>
+<rect class="node human" x="1050" y="1080" width="370" height="90"/>
+<text x="1070" y="1114" class="label">⑦ 法务确认最终审核结论</text><text x="1070" y="1145" class="detail">同意 / 附条件同意 / 不同意及理由</text>
+<rect class="node" x="1050" y="1230" width="370" height="100"/>
+<text x="1070" y="1267" class="label">⑧ 回传审批与终稿归档</text><text x="1070" y="1298" class="detail">首期由人工回传；保留版本和审核记录</text>
+<!-- Feedback -->
+<rect class="node" x="565" y="1080" width="370" height="90"/>
+<text x="585" y="1114" class="label">记录本次人工反馈</text><text x="585" y="1145" class="detail">采纳、驳回、补充及修订理由</text>
+<rect class="node human" x="1050" y="250" width="370" height="90"/>
+<text x="1070" y="284" class="label">法务审核后发布知识更新</text><text x="1070" y="315" class="detail">候选规则 / 案例，经确认后再生效</text>
+<text x="565" y="1203" class="small">↳ 反馈经法务审核发布，后续合同使用新规则</text>
+<text x="80" y="1260" class="detail">多份合同可并行预审，法务集中复核。</text>
+<text x="80" y="1292" class="detail">AI 异常或结果不完整时，转人工处理并提示。</text>
+<line x1="45" y1="1360" x2="1455" y2="1360" stroke="#cbd5e1"/>
+<path d="M50 1395H100" class="edge"/><text x="115" y="1401" class="small">处理流程</text><path d="M260 1395H310" class="edge feedback"/><text x="325" y="1401" class="small">知识输入 / 反馈沉淀</text>
+<text x="1450" y="1401" text-anchor="end" class="small">依据录音 00:30–00:40 整理 · 飞书为后续扩展</text>
+</svg>

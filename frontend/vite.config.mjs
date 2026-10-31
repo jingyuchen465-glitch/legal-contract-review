@@ -14,8 +14,10 @@ export default defineConfig(({ mode }) => {
       extensions: ['.mjs', '.js', '.ts', '.jsx', '.tsx', '.json', '.vue'],
     },
     server: {
+      host: '127.0.0.1',
       port: 8080,
       proxy: {
+        '/socket.io': { target: 'http://localhost:3000', ws: true },
         '/api': {
           target: env.VITE_APP_BACKEND_API_URL || 'http://localhost:3000',
           changeOrigin: true,
@@ -31,18 +33,7 @@ export default defineConfig(({ mode }) => {
         output: {
           manualChunks(id) {
             if (!id.includes('node_modules')) return undefined;
-            if (id.includes('@onlyoffice')) return 'vendor-onlyoffice';
-            if (id.includes('@element-plus/icons-vue')) return 'vendor-element-icons';
-            if (id.includes('element-plus/es/components')) {
-              const match = id.match(/element-plus\/es\/components\/([^/]+)/);
-              return match ? `vendor-element-${match[1]}` : 'vendor-element-components';
-            }
-            if (id.includes('element-plus/theme-chalk') || id.includes('element-plus/dist')) return 'vendor-element-style';
-            if (id.includes('element-plus') || id.includes('@element-plus') || id.includes('@popperjs')) return 'vendor-element-core';
-            if (id.includes('marked')) return 'vendor-markdown';
-            if (id.includes('socket.io-client') || id.includes('engine.io-client')) return 'vendor-realtime';
-            if (id.includes('axios') || id.includes('uuid') || id.includes('@fingerprintjs')) return 'vendor-utils';
-            if (id.includes('vue-router') || id.includes('vue')) return 'vendor-vue';
+            if (id.includes('pdfjs-dist')) return 'vendor-pdf';
             return 'vendor';
           },
         },

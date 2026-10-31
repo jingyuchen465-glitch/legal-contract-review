@@ -1,0 +1,34 @@
+{
+  "name": "legal-agent-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "build": "npm run build --workspace frontend",
+    "start": "npm start --workspace backend",
+    "worker": "npm run worker --workspace backend",
+    "db:migrate": "node backend/pilot/cli.js migrate",
+    "bootstrap": "node backend/pilot/cli.js bootstrap",
+    "seed:demo": "node backend/pilot/cli.js demo",
+    "test": "node --test --test-concurrency=1 backend/test/*.test.js",
+    "test:integration": "node --test --test-concurrency=1 backend/test/integration/*.test.js",
+    "db:local": "node scripts/local-postgres.mjs",
+    "setup:local": "node scripts/setup-local.js",
+    "backup": "node scripts/backup.js",
+    "restore": "node scripts/backup.js restore",
+    "openapi": "node scripts/openapi.js",
+    "restore:drill": "node scripts/restore-drill.js",
+    "licenses": "node scripts/license-inventory.js"
+  },
+  "devDependencies": {
+    "embedded-postgres": "18.4.0-beta.17",
+    "supertest": "^7.2.2"
+  }
+}

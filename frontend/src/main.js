@@ -1,35 +1,20 @@
 import { createApp } from 'vue';
-import App from './App.vue';
-import router from './router';
+import { createRouter, createWebHashHistory } from 'vue-router';
+import { ElDialog } from 'element-plus/es/components/dialog/index.mjs';
+
 import 'element-plus/dist/index.css';
-import './assets/css/tailwind.css';
-import { identifyUser } from './user';
-
-const logoUrl = '/asserts/logo.png';
-
-document.title = '合同审查';
-const favicon = document.querySelector('link[rel="icon"]') || document.createElement('link');
-favicon.rel = 'icon';
-favicon.href = logoUrl;
-document.head.appendChild(favicon);
-
-async function main() {
-  try {
-    await identifyUser();
-
-    const app = createApp(App);
-    app.use(router);
-    app.mount('#app');
-  } catch (error) {
-    console.error('Failed to initialize the application:', error);
-    document.body.innerHTML = '<div style="text-align: center; margin-top: 50px;"><h1>应用加载失败</h1><p>请检查网络连接或联系管理员。</p></div>';
-  }
-}
-
-main();
-
-window.ResizeObserver = class _NewResizeObserver extends ResizeObserver {
-  constructor(callback) {
-    super(() => window.requestAnimationFrame(() => callback.apply(this, arguments)));
-  }
-};
+import './pilot/style.css';
+import Workbench from './pilot/Workbench.vue';
+import './pilot/dingtalk-callback';
+const router=createRouter({history:createWebHashHistory(),routes:[
+  {path:'/',component:()=>import('./pilot/Contracts.vue')},
+  {path:'/reconciliation',component:()=>import('./pilot/Reconciliation.vue')},
+  {path:'/contracts/:id',component:()=>import('./pilot/Review.vue')},
+  {path:'/rules',component:()=>import('./pilot/Rules.vue')},
+  {path:'/feedback',component:()=>import('./pilot/Feedback.vue')},
+  {path:'/dingtalk',component:()=>import('./pilot/DingTalk.vue')},
+  {path:'/settings',component:()=>import('./pilot/Settings.vue')},
+  {path:'/operations',component:()=>import('./pilot/Operations.vue')},
+  {path:'/:pathMatch(.*)*',redirect:'/'},
+]});
+createApp(Workbench).use(router).component('ElDialog',ElDialog).mount('#app');

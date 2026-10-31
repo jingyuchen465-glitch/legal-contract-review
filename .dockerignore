@@ -1,0 +1,14 @@
+node_modules
+**/node_modules
+.git
+.env
+**/.env
+.local
+data
+**/dist
+**/uploads
+test-results
+*.png
+*.docx
+*.log
+backups

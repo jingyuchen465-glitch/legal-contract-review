@@ -1,0 +1,2 @@
+exports.up=async db=>{await db.schema.createTable('la_editor_saves',t=>{t.string('editor_key').references('key').inTable('la_editor_sessions').notNullable();t.string('sha256',64).notNullable();t.uuid('version_id').references('id').inTable('la_versions').notNullable();t.primary(['editor_key','sha256']);t.timestamp('created_at').defaultTo(db.fn.now());});};
+exports.down=async()=>{throw new Error('请从备份恢复');};

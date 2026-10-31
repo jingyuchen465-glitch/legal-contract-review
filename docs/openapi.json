@@ -1,0 +1,4610 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "法律 Agent 合同预审工作台 API",
+    "version": "1.1.0",
+    "description": "统一系统管理员可操作全部合同与功能；每次操作保留实际账号审计。反馈需经草稿和确认发布后生效，不训练模型。技术完成不等于法务批准；最终结论绑定当前文件和任务。状态与数据结构见开发说明，业务事实以数据库为准。"
+  },
+  "servers": [
+    {
+      "url": "/api"
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "summary": "数据库连通性",
+        "operationId": "get__health",
+        "security": [],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/auth/session": {
+      "get": {
+        "summary": "获取当前用户及CSRF令牌",
+        "operationId": "get__auth_session",
+        "security": [],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "summary": "账号登录，轮换会话",
+        "operationId": "post__auth_login",
+        "security": [],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string",
+                    "format": "password"
+                  }
+                },
+                "required": [
+                  "username",
+                  "password"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "summary": "退出会话",
+        "operationId": "post__auth_logout",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/catalog": {
+      "get": {
+        "summary": "分类目录、标签、目录版本；每个类型的reviewEnabled取决于已发布专项规则，trialAvailable表示可内置示例试审",
+        "operationId": "get__catalog",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/contracts": {
+      "get": {
+        "summary": "查询授权合同；page启用每页50条分页，支持q/status/source/type/reviewer筛选，未分页兼容最近200条",
+        "operationId": "get__contracts",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "启用50条/页响应：items,total,page,pageSize"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending_review",
+                "in_review",
+                "returned",
+                "finalized",
+                "archived"
+              ]
+            }
+          },
+          {
+            "name": "source",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "manual",
+                "dingtalk"
+              ]
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "reviewer",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "description": "法务UUID或unassigned"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/contracts/upload": {
+      "post": {
+        "summary": "上传PDF/DOCX并创建初始版本",
+        "operationId": "post__contracts_upload",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "background": {
+                    "type": "string",
+                    "description": "序列化Background JSON"
+                  }
+                },
+                "required": [
+                  "file",
+                  "background"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/contracts/{id}": {
+      "get": {
+        "summary": "读取合同、版本、预审、结论、退回和归档",
+        "operationId": "get__contracts_id_",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/contracts/{id}/background": {
+      "patch": {
+        "summary": "更新背景并重新预审",
+        "operationId": "patch__contracts_id_background",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  },
+                  "background": {
+                    "$ref": "#/components/schemas/Background"
+                  }
+                },
+                "required": [
+                  "revision",
+                  "background"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/contracts/{id}/versions": {
+      "post": {
+        "summary": "上传修改稿、补充材料或签署件",
+        "operationId": "post__contracts_id_versions",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  },
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "kind": {
+                    "enum": [
+                      "contract",
+                      "supplement",
+                      "signed"
+                    ]
+                  }
+                },
+                "required": [
+                  "revision",
+                  "file"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/contracts/{id}/classification": {
+      "put": {
+        "summary": "法务确认或纠正分类及立场",
+        "operationId": "put__contracts_id_classification",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  },
+                  "typeId": {
+                    "type": "string"
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "perspectiveConfirmed": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "revision",
+                  "typeId",
+                  "tags",
+                  "perspectiveConfirmed"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/contracts/{id}/assignment": {
+      "put": {
+        "summary": "法务分配负责人",
+        "operationId": "put__contracts_id_assignment",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  },
+                  "reviewerId": {
+                    "oneOf": [
+                      {
+                        "type": "string",
+                        "format": "uuid"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "revision",
+                  "reviewerId"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reviewers": {
+      "get": {
+        "summary": "可分配法务账号目录",
+        "operationId": "get__reviewers",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/reviews": {
+      "post": {
+        "summary": "创建当前文件的异步预审；trial固定内置示例快照，不能确认最终结论",
+        "operationId": "post__reviews",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "202": {
+            "description": "异步任务已持久化，返回任务ID"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "contractId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  },
+                  "mode": {
+                    "enum": [
+                      "formal",
+                      "trial"
+                    ],
+                    "default": "formal",
+                    "description": "formal只使用已发布规则；trial使用版本固定的内置示例规则"
+                  }
+                },
+                "required": [
+                  "contractId",
+                  "revision"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reviews/{id}": {
+      "get": {
+        "summary": "任务进度、检查项、快照和步骤；snapshot.reviewMode区分formal/trial，旧记录默认为formal",
+        "operationId": "get__reviews_id_",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/reviews/{id}/cancel": {
+      "post": {
+        "summary": "取消尚未完成的任务",
+        "operationId": "post__reviews_id_cancel",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  }
+                },
+                "required": [
+                  "revision"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reviews/{id}/findings/{findingId}/disposition": {
+      "put": {
+        "summary": "法务复核检查项",
+        "operationId": "put__reviews_id_findings_findingId_disposition",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "findingId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  },
+                  "action": {
+                    "enum": [
+                      "accept",
+                      "reject",
+                      "correct",
+                      "needs_information",
+                      "acknowledge"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "suggestion": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "enum": [
+                      "high",
+                      "medium",
+                      "low"
+                    ]
+                  }
+                },
+                "required": [
+                  "revision",
+                  "action"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reviews/{id}/findings": {
+      "post": {
+        "summary": "添加人工风险",
+        "operationId": "post__reviews_id_findings",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "suggestion": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "enum": [
+                      "high",
+                      "medium",
+                      "low"
+                    ]
+                  },
+                  "evidence": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Evidence"
+                    }
+                  }
+                },
+                "required": [
+                  "title",
+                  "reason",
+                  "severity"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reviews/{id}/return": {
+      "post": {
+        "summary": "退回业务修改或补件",
+        "operationId": "post__reviews_id_return",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "revision",
+                  "reason"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reviews/{id}/decision": {
+      "post": {
+        "summary": "法务最终结论，不能覆盖已有结论",
+        "operationId": "post__reviews_id_decision",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  },
+                  "outcome": {
+                    "enum": [
+                      "agree",
+                      "conditional",
+                      "disagree"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "conditions": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "revision",
+                  "outcome"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/reviews/{id}/report": {
+      "get": {
+        "summary": "导出报告（format=html/docx/pdf）",
+        "operationId": "get__reviews_id_report",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "html",
+                "docx",
+                "pdf"
+              ],
+              "default": "html"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/contracts/{id}/archive": {
+      "post": {
+        "summary": "记录人工回传并关联归档件",
+        "operationId": "post__contracts_id_archive",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  },
+                  "manuallyReturned": {
+                    "const": true
+                  },
+                  "note": {
+                    "type": "string"
+                  },
+                  "signedVersionId": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "revision",
+                  "manuallyReturned"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/files/{versionId}": {
+      "get": {
+        "summary": "按会话或限时版本凭证读取文件",
+        "operationId": "get__files_versionId_",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "versionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "仅编辑器使用，包含versionId/userId/aud和15分钟有效期"
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/contracts/{id}/editor": {
+      "get": {
+        "summary": "创建受控OnlyOffice编辑会话",
+        "operationId": "get__contracts_id_editor",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/onlyoffice/callback": {
+      "post": {
+        "summary": "OnlyOffice保存回调，需有效HS256签名",
+        "operationId": "post__onlyoffice_callback",
+        "security": [
+          {
+            "officeJwt": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "integer"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "token": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "status",
+                  "token"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rule-packs": {
+      "get": {
+        "summary": "全部规则版本",
+        "operationId": "get__rule_packs",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/rule-packs/{id}/versions": {
+      "post": {
+        "summary": "创建新规则草稿",
+        "operationId": "post__rule_packs_id_versions",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RulePack"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rule-pack-versions/{id}": {
+      "put": {
+        "summary": "原地保存草稿；revision防止覆盖并发修改",
+        "operationId": "put__rule_pack_versions_id_",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/RulePack"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "revision": {
+                        "$ref": "#/components/schemas/Revision"
+                      }
+                    },
+                    "required": [
+                      "revision"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rule-pack-versions/{id}/submit": {
+      "post": {
+        "summary": "规则版本状态变更：submit",
+        "operationId": "post__rule_pack_versions_id_submit",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  }
+                },
+                "required": [
+                  "revision"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rule-pack-versions/{id}/publish": {
+      "post": {
+        "summary": "规则版本状态变更：publish",
+        "operationId": "post__rule_pack_versions_id_publish",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  }
+                },
+                "required": [
+                  "revision"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/rule-pack-versions/{id}/retire": {
+      "post": {
+        "summary": "规则版本状态变更：retire",
+        "operationId": "post__rule_pack_versions_id_retire",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  }
+                },
+                "required": [
+                  "revision"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/feedback-cases": {
+      "get": {
+        "summary": "候选反馈列表",
+        "operationId": "get__feedback_cases",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      },
+      "post": {
+        "summary": "提交候选反馈",
+        "operationId": "post__feedback_cases",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reviewId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "findingId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "kind": {
+                    "enum": [
+                      "rule",
+                      "false_positive",
+                      "false_negative",
+                      "classification",
+                      "normal_expression"
+                    ]
+                  },
+                  "content": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "content"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/feedback-cases/{id}": {
+      "patch": {
+        "summary": "更新反馈状态；需携带revision，正式规则发布时自动关联反馈",
+        "operationId": "patch__feedback_cases_id_",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  },
+                  "state": {
+                    "enum": [
+                      "pending",
+                      "published",
+                      "retired"
+                    ]
+                  },
+                  "ruleVersionId": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "revision",
+                  "state"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/feedback-cases/{id}/rule-draft": {
+      "post": {
+        "summary": "按反馈复制当前正式规则为草稿；重复请求复用；无法定位返回RULE_SELECTION_REQUIRED，需显式选择packId",
+        "operationId": "post__feedback_cases_id_rule_draft",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "packId": {
+                    "type": "string"
+                  }
+                },
+                "required": []
+              }
+            }
+          }
+        }
+      }
+    },
+    "/feedback-cases/{id}/knowledge-draft": {
+      "post": {
+        "summary": "将正常表达加入规则参考资料草稿，确认发布后生效",
+        "operationId": "post__feedback_cases_id_knowledge_draft",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "packId": {
+                    "type": "string"
+                  }
+                },
+                "required": []
+              }
+            }
+          }
+        }
+      }
+    },
+    "/feedback-cases/{id}/context": {
+      "get": {
+        "summary": "反馈原文、提交人、不可变合同版本、检查项和法务处理记录",
+        "operationId": "get__feedback_cases_id_context",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/feedback-cases/{id}/evaluation-preview": {
+      "get": {
+        "summary": "自动带入合同正文、人工确认分类、风险和高风险项，供法务核实",
+        "operationId": "get__feedback_cases_id_evaluation_preview",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/feedback-cases/{id}/evaluation-case": {
+      "post": {
+        "summary": "确认反馈标注后保存样本；按反馈去重",
+        "operationId": "post__feedback_cases_id_evaluation_case",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "split": {
+                    "enum": [
+                      "development",
+                      "holdout"
+                    ]
+                  },
+                  "expected": {
+                    "$ref": "#/components/schemas/EvaluationExpected"
+                  },
+                  "confirmed": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "name",
+                  "split",
+                  "expected",
+                  "confirmed"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/classification-guidance": {
+      "get": {
+        "summary": "分类指导全部版本",
+        "operationId": "get__classification_guidance",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/classification-guidance/{typeId}/versions": {
+      "post": {
+        "summary": "创建分类指导草稿",
+        "operationId": "post__classification_guidance_typeId_versions",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "typeId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassificationGuidance"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/classification-guidance-versions/{id}": {
+      "put": {
+        "summary": "保存分类指导草稿；需revision",
+        "operationId": "put__classification_guidance_versions_id_",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ClassificationGuidance"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "revision": {
+                        "$ref": "#/components/schemas/Revision"
+                      }
+                    },
+                    "required": [
+                      "revision"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/classification-guidance-versions/{id}/publish": {
+      "post": {
+        "summary": "确认发布分类指导，只影响后续创建的预审",
+        "operationId": "post__classification_guidance_versions_id_publish",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  }
+                },
+                "required": [
+                  "revision"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/feedback-cases/{id}/classification-draft": {
+      "post": {
+        "summary": "为人工纠正类型创建分类指导草稿；未确认类型需显式选择typeId",
+        "operationId": "post__feedback_cases_id_classification_draft",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "typeId": {
+                    "type": "string"
+                  }
+                },
+                "required": []
+              }
+            }
+          }
+        }
+      }
+    },
+    "/evaluation-cases": {
+      "get": {
+        "summary": "标注样本列表",
+        "operationId": "get__evaluation_cases",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      },
+      "post": {
+        "summary": "保存法务标注样本",
+        "operationId": "post__evaluation_cases",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "split": {
+                    "enum": [
+                      "development",
+                      "holdout"
+                    ]
+                  },
+                  "document": {
+                    "type": "object",
+                    "properties": {
+                      "blocks": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "text": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "text"
+                          ]
+                        }
+                      }
+                    },
+                    "required": [
+                      "blocks"
+                    ]
+                  },
+                  "expected": {
+                    "type": "object",
+                    "properties": {
+                      "typeId": {
+                        "type": "string"
+                      },
+                      "tags": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "highRiskRuleIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "riskRuleIds": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "background": {
+                        "$ref": "#/components/schemas/Background"
+                      }
+                    },
+                    "required": [
+                      "typeId"
+                    ]
+                  }
+                },
+                "required": [
+                  "name",
+                  "split",
+                  "document",
+                  "expected"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/evaluations": {
+      "post": {
+        "summary": "异步运行模型/规则评测；草稿仅用于development并固定其内容和revision",
+        "operationId": "post__evaluations",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "202": {
+            "description": "异步任务已持久化，返回任务ID"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "adapters": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "enum": [
+                        "llm",
+                        "jev"
+                      ]
+                    }
+                  },
+                  "split": {
+                    "enum": [
+                      "development",
+                      "holdout"
+                    ]
+                  },
+                  "includeReview": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "draftRuleVersionId": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                },
+                "required": [
+                  "adapters",
+                  "split"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "评测记录及结果",
+        "operationId": "get__evaluations",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "202": {
+            "description": "异步任务已持久化，返回任务ID"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/settings": {
+      "get": {
+        "summary": "管理员读取脱敏配置",
+        "operationId": "get__settings",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/settings/model": {
+      "put": {
+        "summary": "保存指定模型服务，密钥加密",
+        "operationId": "put__settings_model",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "baseUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "apiKey": {
+                    "type": "string",
+                    "format": "password"
+                  }
+                },
+                "required": [
+                  "baseUrl",
+                  "name"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings/model/test": {
+      "post": {
+        "summary": "验证当前表单的模型连接与JSON输出；仅发送固定测试文本",
+        "operationId": "post__settings_model_test",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "baseUrl": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "apiKey": {
+                    "type": "string",
+                    "format": "password"
+                  }
+                },
+                "required": [
+                  "baseUrl",
+                  "name"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings/model/models": {
+      "post": {
+        "summary": "从当前指定服务读取可选模型列表",
+        "operationId": "post__settings_model_models",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "baseUrl": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "apiKey": {
+                    "type": "string",
+                    "format": "password"
+                  }
+                },
+                "required": [
+                  "baseUrl",
+                  "name"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings/diagnostics": {
+      "post": {
+        "summary": "检查数据库、Worker、存储和已配置内部服务",
+        "operationId": "post__settings_diagnostics",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/settings/dingtalk-connection": {
+      "put": {
+        "summary": "保存钉钉启停、应用标识及加密密钥；Worker自动应用",
+        "operationId": "put__settings_dingtalk_connection",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "clientId": {
+                    "type": "string"
+                  },
+                  "clientSecret": {
+                    "type": "string",
+                    "format": "password"
+                  },
+                  "expectedUpdatedAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "clientId"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/settings/dingtalk/test": {
+      "post": {
+        "summary": "仅验证应用鉴权，不读取审批，不返回accessToken",
+        "operationId": "post__settings_dingtalk_test",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "clientId": {
+                    "type": "string"
+                  },
+                  "clientSecret": {
+                    "type": "string",
+                    "format": "password"
+                  }
+                },
+                "required": [
+                  "enabled",
+                  "clientId"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dingtalk/account": {
+      "get": {
+        "summary": "管理员读取本人绑定状态，不返回企业UserID",
+        "operationId": "get__dingtalk_account",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      },
+      "delete": {
+        "summary": "解除本人钉钉绑定，撤销未完成请求",
+        "operationId": "delete__dingtalk_account",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/dingtalk/account/start": {
+      "post": {
+        "summary": "创建10分钟有效的一次性网页登录授权请求，返回授权URL",
+        "operationId": "post__dingtalk_account_start",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/dingtalk/account/complete": {
+      "post": {
+        "summary": "验证授权码、state与企业身份并绑定本人账号",
+        "operationId": "post__dingtalk_account_complete",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "state": {
+                    "type": "string",
+                    "minLength": 64,
+                    "maxLength": 64
+                  }
+                },
+                "required": [
+                  "code",
+                  "state"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users": {
+      "get": {
+        "summary": "管理员查询账号；所有账号统一roles=[admin]",
+        "operationId": "get__users",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      },
+      "post": {
+        "summary": "创建管理员账号，department仅作备注，无需指定角色",
+        "operationId": "post__users",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 12
+                  },
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "department": {
+                    "type": "string"
+                  },
+                  "active": {
+                    "type": "boolean",
+                    "default": true
+                  }
+                },
+                "required": [
+                  "username",
+                  "password",
+                  "displayName"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/users/{id}": {
+      "patch": {
+        "summary": "更新管理员信息及启停，不能停用最后一个管理员",
+        "operationId": "patch__users_id_",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "$ref": "#/components/schemas/Revision"
+                  },
+                  "displayName": {
+                    "type": "string"
+                  },
+                  "department": {
+                    "type": "string"
+                  },
+                  "active": {
+                    "type": "boolean"
+                  },
+                  "password": {
+                    "type": "string",
+                    "minLength": 12
+                  }
+                },
+                "required": [
+                  "revision",
+                  "displayName",
+                  "department",
+                  "active"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/operations": {
+      "get": {
+        "summary": "管理员查询任务、接入和备份状态；接入summary包含collected/duplicate/skipped/failed及原因",
+        "operationId": "get__operations",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/operations/{kind}/{id}/retry": {
+      "post": {
+        "summary": "重试reviews或events任务",
+        "operationId": "post__operations_kind_id_retry",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "来自GET /auth/session；登录后使用新令牌"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "201": {
+            "description": "新资源创建成功"
+          },
+          "202": {
+            "description": "异步任务已持久化，返回任务ID"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    },
+    "/audit-events": {
+      "get": {
+        "summary": "管理员查询最近200条审计",
+        "operationId": "get__audit_events",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "成功；异步任务查询数据库状态"
+          },
+          "400": {
+            "description": "输入无效"
+          },
+          "401": {
+            "description": "需要登录或签名无效"
+          },
+          "403": {
+            "description": "无角色权限、CSRF或Origin校验失败"
+          },
+          "404": {
+            "description": "不存在或没有合同访问权限"
+          },
+          "409": {
+            "description": "记录revision冲突、历史版本或业务前置条件未满足"
+          },
+          "422": {
+            "description": "缺少业务配置或需人工处理"
+          },
+          "500": {
+            "description": "内部错误，不回显正文或密钥"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "legal.sid"
+      },
+      "officeJwt": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "HS256签名；也可放在回调body.token"
+      }
+    },
+    "schemas": {
+      "Background": {
+        "type": "object",
+        "required": [
+          "ourEntity",
+          "perspective",
+          "purpose"
+        ],
+        "properties": {
+          "ourEntity": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "perspective": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "purpose": {
+            "type": "string",
+            "maxLength": 3000
+          }
+        }
+      },
+      "Revision": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "从最近一次读取的记录获得；不匹配返回409"
+      },
+      "Evidence": {
+        "type": "object",
+        "required": [
+          "blockId",
+          "quote"
+        ],
+        "properties": {
+          "blockId": {
+            "type": "string"
+          },
+          "quote": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "Rule": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "instruction",
+          "severity"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "instruction": {
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "mandatory": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
+      "RulePack": {
+        "type": "object",
+        "required": [
+          "name",
+          "scope",
+          "rules"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "object"
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rule"
+            }
+          },
+          "knowledge": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "title",
+                "content",
+                "source",
+                "effectiveDate"
+              ]
+            }
+          }
+        }
+      },
+      "ClassificationGuidance": {
+        "type": "object",
+        "required": [
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "include": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "exclude": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "examples": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "EvaluationExpected": {
+        "type": "object",
+        "required": [
+          "typeId",
+          "tags",
+          "riskRuleIds",
+          "highRiskRuleIds",
+          "background"
+        ],
+        "properties": {
+          "typeId": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "riskRuleIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "highRiskRuleIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "必须为riskRuleIds的子集"
+          },
+          "background": {
+            "$ref": "#/components/schemas/Background"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

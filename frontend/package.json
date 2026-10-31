@@ -8,6 +8,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "pdfjs-dist": "6.4.299",
     "@fingerprintjs/fingerprintjs": "^4.4.1",
     "@onlyoffice/document-editor-vue": "^1.6.1",
     "axios": "^1.7.2",

@@ -1,5 +1,9 @@
 # 依赖目录
 node_modules/
+.local/
+test-results/
+__pycache__/
+.venv/
 frontend/node_modules/
 backend/node_modules/
 
@@ -58,3 +62,4 @@ report.md
 
 .trae
 .gemini
+.tmp-video-server.js

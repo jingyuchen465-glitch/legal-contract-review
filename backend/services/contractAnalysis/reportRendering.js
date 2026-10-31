@@ -368,11 +368,13 @@ const streamReviewReportPdf = (res, contract, reviewData = {}) => {
     const fontPath = findPdfFont();
     if (fontPath) {
         try {
-            doc.font(fontPath);
+            if (/NotoSansCJK.*\.ttc$/i.test(fontPath)) doc.font(fontPath, 'NotoSansCJKsc-Regular');
+            else if (/simsun\.ttc$/i.test(fontPath)) doc.font(fontPath, 'SimSun');
+            else doc.font(fontPath);
         } catch (error) {
-            console.warn(`[PDF] Failed to load font ${fontPath}: ${error.message}`);
+            throw new Error('无法加载中文报告字体，请检查部署字体配置');
         }
-    }
+    } else { throw new Error('未安装中文报告字体，请安装 Noto CJK 或 Windows 中文字体'); }
 
     doc.pipe(res);
     doc.fontSize(18).text('合同审查报告');

@@ -1,83 +1,122 @@
+name: legal-agent
+x-app-env: &app-env
+  NODE_ENV: ${NODE_ENV:-development}
+  HOST: 0.0.0.0
+  PORT: 3000
+  PUBLIC_URL: ${PUBLIC_URL:-http://localhost:8080}
+  DATABASE_URL: postgres://legalagent:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/legalagent
+  DATA_ROOT: /data
+  SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
+  TOKEN_SECRET: ${TOKEN_SECRET:?set TOKEN_SECRET}
+  TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-0}
+  MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+  MODEL_NAME: ${MODEL_NAME:-}
+  MODEL_API_KEY: ${MODEL_API_KEY:-}
+  MODEL_CONCURRENCY: ${MODEL_CONCURRENCY:-2}
+  MODEL_TIMEOUT_MS: ${MODEL_TIMEOUT_MS:-120000}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+  MILVUS_ADDRESS: milvus:19530
+  MILVUS_TOKEN: ${MILVUS_TOKEN:-}
+  OCR_URL: http://ocr:8090
+  OCR_TOKEN: ${OCR_TOKEN:?set OCR_TOKEN}
+  ONLYOFFICE_URL: ${ONLYOFFICE_URL:-http://localhost:8081}
+  ONLYOFFICE_INTERNAL_URL: http://onlyoffice
+  ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:?set ONLYOFFICE_JWT_SECRET}
+  BACKEND_URL_FOR_DOCKER: http://api:3000
+  JEV_BASE_URL: ${JEV_BASE_URL:-https://api.typesafe.ai}
+  JEV_MODEL: ${JEV_MODEL:-jev-1.14.0}
+  JEV_API_KEY: ${JEV_API_KEY:-}
+  DINGTALK_ENABLED: ${DINGTALK_ENABLED:-false}
+  DINGTALK_CLIENT_ID: ${DINGTALK_CLIENT_ID:-}
+  DINGTALK_CLIENT_SECRET: ${DINGTALK_CLIENT_SECRET:-}
+  DINGTALK_OPERATOR_ID: ${DINGTALK_OPERATOR_ID:-}
 services:
   postgres:
-    image: postgres:16-alpine
-    container_name: contract-review-postgres
-    restart: always
+    image: postgres:18-bookworm
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-contract_review}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-contract_review}
-      POSTGRES_DB: ${POSTGRES_DB:-contract_review}
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: legalagent
+      POSTGRES_USER: legalagent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - ${DATA_ROOT:-D:/LegalAgentData}/postgres:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-
-  onlyoffice:
-    image: onlyoffice/documentserver:9.3.1.2
-    container_name: contract-review-onlyoffice
-    restart: always
+      test: [CMD-SHELL, pg_isready -U legalagent -d legalagent]
+      interval: 10s
+      retries: 10
+    restart: unless-stopped
+  api:
+    build: .
+    image: legal-agent:local
+    environment: *app-env
     ports:
-      - "8081:80"
-    environment:
-      - JWT_ENABLED=true
-      - JWT_SECRET=${ONLYOFFICE_JWT_SECRET:-change-me-onlyoffice-jwt-secret}
-      - JWT_IN_BODY=true
-      - JWT_HEADER=Authorization
+      - 127.0.0.1:8080:3000
     volumes:
-      - ./data/onlyoffice/data:/var/www/onlyoffice/Data
-      - ./data/onlyoffice/logs:/var/log/onlyoffice
-      - ./data/onlyoffice/lib:/var/lib/onlyoffice
-      - ./data/onlyoffice/db:/var/lib/postgresql
-
-  milvus-etcd:
-    image: quay.io/coreos/etcd:v3.5.5
-    container_name: contract-review-milvus-etcd
-    restart: always
-    environment:
-      - ETCD_AUTO_COMPACTION_MODE=revision
-      - ETCD_AUTO_COMPACTION_RETENTION=1000
-    command: >
-      etcd
-      --advertise-client-urls=http://contract-review-milvus-etcd:2379
-      --listen-client-urls=http://0.0.0.0:2379
-    volumes:
-      - ./data/milvus/etcd:/etcd
-
-  milvus-minio:
-    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
-    container_name: contract-review-milvus-minio
-    restart: always
-    environment:
-      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
-      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
-    command: minio server /minio_data
-    ports:
-      - "9000:9000"
-    volumes:
-      - ./data/milvus/minio:/minio_data
-
-  milvus:
-    image: milvusdb/milvus:v2.4.4
-    container_name: contract-review-milvus
-    restart: always
+      - ${DATA_ROOT:-D:/LegalAgentData}/application:/data
     depends_on:
-      - milvus-etcd
-      - milvus-minio
-    ports:
-      - "19530:19530"
-      - "9091:9091"
-    environment:
-      ETCD_ENDPOINTS: contract-review-milvus-etcd:2379
-      MINIO_ADDRESS: contract-review-milvus-minio:9000
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      retries: 10
+    restart: unless-stopped
+  worker:
+    image: legal-agent:local
+    command: [backend/pilot/worker.js]
+    environment: *app-env
     volumes:
-      - ./data/milvus/data:/var/lib/milvus
-    command: ["milvus", "run", "standalone"]
-
-networks:
-  default:
-    name: contract-review-milvus-network
+      - ${DATA_ROOT:-D:/LegalAgentData}/application:/data
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+  ocr:
+    build: ./ocr
+    environment:
+      OCR_TOKEN: ${OCR_TOKEN:?set OCR_TOKEN}
+    volumes:
+      - ocr-models:/home/ocr/.paddleocr
+    restart: unless-stopped
+  onlyoffice:
+    image: onlyoffice/documentserver:8.3.3
+    environment:
+      JWT_ENABLED: 'true'
+      JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:?set ONLYOFFICE_JWT_SECRET}
+      ALLOW_PRIVATE_IP_ADDRESS: 'true'
+      ALLOW_META_IP_ADDRESS: 'false'
+    ports:
+      - 127.0.0.1:8081:80
+    volumes:
+      - office-data:/var/www/onlyoffice/Data
+      - office-cache:/var/lib/onlyoffice
+    restart: unless-stopped
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.18
+    command: [etcd, --advertise-client-urls=http://etcd:2379, --listen-client-urls=http://0.0.0.0:2379, --data-dir=/etcd]
+    volumes: [etcd-data:/etcd]
+    restart: unless-stopped
+  minio:
+    image: minio/minio:RELEASE.2024-12-18T13-15-44Z
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?set MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY}
+    command: [minio, server, /data]
+    volumes: [minio-data:/data]
+    restart: unless-stopped
+  milvus:
+    image: milvusdb/milvus:v2.5.10
+    command: [milvus, run, standalone]
+    security_opt: [seccomp:unconfined]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:?set MINIO_ACCESS_KEY}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY}
+    volumes: [milvus-data:/var/lib/milvus]
+    depends_on: [etcd, minio]
+    restart: unless-stopped
+volumes:
+  ocr-models:
+  office-data:
+  office-cache:
+  etcd-data:
+  minio-data:
+  milvus-data:

@@ -1,0 +1,8 @@
+fastapi==0.115.12
+uvicorn==0.34.2
+python-multipart==0.0.20
+paddlepaddle==3.0.0
+paddleocr==2.10.0
+PyMuPDF==1.25.5
+numpy<3
+Pillow>=11.1.0

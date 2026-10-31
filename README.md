@@ -1,383 +1,76 @@
-# Contract Review AI
+# 法律 Agent · 合同预审工作台
 
-> 基于 AI 的中文合同审查与知识库增强平台，支持合同风险分析、OnlyOffice 在线审阅、法律知识检索与智能问答。
+基于 [xiaodingfeng/contract-review](https://github.com/xiaodingfeng/contract-review) 提交 `c70e32aaad9525b2b60a099ab0251ae64b2d4044` 二次开发，保留上游 MIT 许可与 [原始说明](README.upstream.md)。
 
-如需帮助，可微信联系
+面向公司法务的独立 Web 工作台，支持合同接收、结构化解析、分类及专项标签、版本化规则、异步预审、证据定位、人工复核、修改重审、最终结论与人工回传归档。**AI 预审完成与法务同意分别记录。**
 
-<img width="300" height="100" alt="wx" src="https://github.com/user-attachments/assets/fe7f2d59-5032-4ab5-a7d7-82bffcec1041" />
+当前交付是可运行的开发实现。真实模型、钉钉、PaddleOCR、OnlyOffice、Milvus 与法务质量验收仍需配置及联调，不能把工程测试结果当作已完成业务上线验收。
 
-## ✨ Features
+## 在当前电脑运行
 
-- 📄 合同上传与 AI 预分析
-  - 支持 DOCX / PDF 上传，自动检测扫描件并提示
-  - 自动识别合同类型、主体信息与审查范围
-  - 异步分析任务，Socket.IO 实时推送进度与 ETA
-- ⚖️ 合同风险审查
-  - 输出风险点、修改建议、相关法条与审查理由
-  - 风险仪表盘：整体风险等级 + 高/中/低分级筛选排序
-  - 违约成本分析与法律依据引用（citations）渲染
-  - 专项审查持久化，支持历史记录查看与恢复
-  - 支持关联裁判文书增强分析
-  - 谈判博弈模拟：对修改建议反向推演，输出对方反驳 / 折中方案 / 谈判话术，已推演建议按钮显绿色勾标记
-  - 行业标准对比：审查时自动检索标准条款库，对核心条款输出差异对比
-  - 导出审查报告（HTML / PDF / Word），含风险证据、法条时效、标准对比、增量审查记录
-- 📝 OnlyOffice 在线协同编辑
-  - 文档内精准定位条款
-  - 添加批注与修改建议
-  - 一键采纳建议并高亮变更内容
-  - 版本管理：任意两版本对比、缺失条款一键补全
-- 📚 法律知识库
-  - 支持法律法规、裁判文书、审查规则导入
-  - 支持向量检索、删除与模板下载
-  - 行业标准条款库：公共库 + 私有库，适用合同类型多选，审查时自动对比
-  - 法律时效性监控：标注现行 / 已修订 / 已废止，附替代版本提示
-- 🏢 企业核验
-  - 企查查 OpenAPI v2（AppKey + SecretKey + MD5 签名）
-  - 天眼查 Bearer 鉴权
-  - 无 Token 时自动回退到网页搜索，提取法定代表人 / 统一社会信用代码 / 风险关键词
-- 📋 审查模板管理
-  - 在线 CRUD，支持合同类型关键词、审查点、核心目的、报告章节配置
-  - 版本快照与回滚，系统模板不可删除
-- 🤖 智能问答
-  - SSE 流式输出
-  - 携带上下文会话历史，按合同隔离问答记录
-  - 支持知识库检索 + 受控联网搜索（含广告过滤与重试）
-- 📋 审查记录管理
-  - 历史记录搜索与多维度筛选（状态、合同类型）
-  - 展示合同类型、审查立场与风险点统计
-- 🧠 向量检索与 AI 能力
-  - Embedding / Rerank
-  - Milvus 向量数据库
-  - OpenAI Compatible API
-  - 检索优化：候选集最小 48 条 + 单 query 降级补充 + ngram 二次切分提升短关键词召回
-  - 分通道检索：通道 A（审查维度）+ 通道 B（合同内容），配额融合 + 软阈值
-  - 谈判博弈模拟：LLM 单次反向论证，推断对方立场与折中方案
-  - 视觉模型印章分析：PS 疑似 / 位置合规 / 印章类型识别
-- 🐳 Docker 一键部署
-  - PostgreSQL
-  - Milvus
-  - MinIO
-  - OnlyOffice
+已准备本机原生 PostgreSQL、Node.js 24、依赖、随机开发配置和管理员账号。工作台地址：**http://localhost:8080**。
 
-***
+初始管理员账号见 [本机凭据文件](.local/initial-admin.txt)。密码不写入本文、不提交 Git。所有账号统一为系统管理员，可提交、复核、维护规则和发布。建议每位法务使用独立账号，审计记录保留具体操作者。
 
-## 🖼️ Demo
+服务关闭后，分别在两个终端运行：
 
-| 首页             | 合同分析           |
-| -------------- | -------------- |
-| ![](img/1.jpg) | ![](img/2.jpg) |
+```powershell
+# 终端 1：原生 PostgreSQL，保持运行
+npm run db:local
 
-| 风险审查           | 修改建议           |
-| -------------- | -------------- |
-| ![](img/3.jpg) | ![](img/5.jpg) |
-
-| 知识库             | 智能问答           |
-| --------------- | -------------- |
-| ![](img/10.jpg) | ![](img/9.jpg) |
-
-更多演示图：
-
-![](img/7.jpg)
-
-![](img/12.jpg)
-
-![](img/6.jpg)
-
-![](img/4.jpg)
-
-![](img/11.jpg)
-
-***
-
-## 🏗️ Tech Stack
-
-### Frontend
-
-- Vue 3
-- Vite
-- Element Plus
-- Tailwind CSS
-- OnlyOffice Document Editor
-
-### Backend
-
-- Node.js
-- Express
-- Knex
-- PostgreSQL
-- Socket.IO
-
-### AI / RAG
-
-- OpenAI Compatible Chat API
-- Embedding
-- Rerank
-- Milvus
-- 法律 Markdown 解析
-- 裁判文书 JSON 解析
-- 谈判博弈模拟（LLM 反向论证）
-- 视觉模型印章分析
-- 企查查 / 天眼查企业核验
-
-### Infrastructure
-
-- Docker Compose
-- PostgreSQL
-- Milvus
-- MinIO
-- etcd
-- OnlyOffice
-
-***
-
-## 📁 Project Structure
-
-```text
-.
-├── backend/
-│   ├── data/              # 法律法规、裁判文书、模板
-│   ├── routes/            # API 路由（contracts / knowledge / standards / ...）
-│   ├── services/          # AI / 向量库 / 检索 / 谈判模拟 / 企业核验
-│   └── uploads/           # 上传目录（已忽略）
-│
-├── frontend/
-│   ├── src/               # Vue 源码
-│   └── dist/              # 构建产物（已忽略）
-│
-├── data/
-│   ├── postgres/          # PostgreSQL 数据目录
-│   ├── milvus/            # Milvus / MinIO / etcd
-│   └── onlyoffice/        # OnlyOffice 数据目录
-│
-├── docker-compose.yml
-└── README.md
-```
-
-***
-
-## 🚀 Quick Start
-
-### 1. Clone Repository
-
-```bash
-git clone https://github.com/xiaodingfeng/contract-review
-
-cd contract-review
-```
-
-***
-
-### 2. Install Dependencies
-
-```bash
-# backend
-cd backend
-npm install
-
-# frontend
-cd ../frontend
-npm install
-```
-
-***
-
-### 3. Configure Environment Variables
-
-```bash
-# backend
-copy .env.example .env
-
-# frontend
-copy .env.example .env
-```
-
-### Backend Required Variables
-
-```env
-LLM_API_KEY=
-EMBEDDING_API_KEY=
-ONLYOFFICE_JWT_SECRET=
-```
-
-同时需要配置：
-
-- PostgreSQL
-- Milvus
-- OnlyOffice
-
-***
-
-### 4. Start Infrastructure Services
-
-```bash
-docker compose up -d
-```
-
-***
-
-### 5. Start Backend
-
-```bash
-cd backend
-
+# 终端 2：迁移、初始化并启动 API、Worker、前端
+npm run db:migrate
+npm run setup:local
 npm run dev
 ```
 
-首次启动会：
+在新电脑先执行 `npm ci`，再按上述步骤操作。本机数据在 `.local/data`，开发数据库在 `%LOCALAPPDATA%/LegalAgentDev`。`.env` 含本机随机密钥，不要覆盖或提交。正式试点通过 `DATA_ROOT` 和 Compose 配置到 `D:/LegalAgentData`，详见部署手册。
 
-- 初始化数据库
+## 首次试用
 
-***
+1. 为各位法务建立独立管理员账号，并配置指定模型服务。
+2. 法务依据公司标准审核规则并发布；初始化的通用、采购、海外仓及软件类规则只是示例草稿。
+3. 业务上传 PDF / DOCX，填写我方主体、立场和交易目的。每份文件上限 50MB；旧 DOC 需转换。
+4. 法务确认分类与立场，逐条处理风险及不确定项。修改后上传新版本，或使用已联通的 OnlyOffice。
+5. 全部问题处理后，由法务确认同意、附条件同意或不同意。下载终稿和报告，人工回传钉钉并记录归档。
 
-### 6. Start Frontend
+未配置模型、正式规则或 OCR 时，任务会明确进入待处理状态，不会生成虚假的完整审查结果。四大类十三类型均可归档分类，任一类型发布适用专项规则后即可正式预审。
 
-```bash
-cd frontend
+采购、海外仓及软件类可在合同详情点击「示例规则试审」，使用固定版本的内置参考检查项体验完整流程。软件类含 11 项专项及 4 项通用检查，覆盖开发、许可、订阅及维护服务。试审不发布规则，页面及报告明确标记为示例，不能直接确认最终结论；正式使用仍需法务发布公司标准后重新预审。详见[软件合同审查使用说明](docs/软件合同审查使用说明.md)。
 
-npm run dev
-```
+## 源码与文档
 
-默认访问地址：
+| 内容 | 入口 |
+|---|---|
+| 开发架构、对象、状态与安全边界 | [开发与架构说明](docs/开发与架构说明.md) |
+| Windows 运行、容器、集成配置、备份恢复、迁移 | [部署与操作手册](docs/部署与操作手册.md) |
+| 需求逐项追踪、待联调输入、质量目标 | [需求追踪与验收](docs/需求追踪与验收.md) |
+| 配置页操作指南 | [配置模块使用说明](docs/配置模块使用说明.md) |
+| 中文表单配置、规则审核与发布 | [规则配置使用说明](docs/规则配置使用说明.md) |
+| 本次工程验证结果与限制 | [工程验证记录](docs/工程验证记录.md) |
+| HTTP 接口，51 个操作 | [OpenAPI 3.1](docs/openapi.json) |
+| 上游与依赖许可清单 | [依赖许可与上游](docs/依赖许可与上游.md) |
+| 后端业务与迁移 | `backend/pilot/` |
+| 六组前端工作台页面 | `frontend/src/pilot/` |
+| 独立 CPU OCR 服务 | `ocr/` |
+| 配置示例与部署编排 | `.env.example`、`docker-compose.yml`、`Dockerfile` |
 
-```text
-http://localhost:8080
-```
+上游旧代码保留供二开对照；当前入口不会挂载指纹自动登录、匿名合同静态目录或自动公开法律导入。
 
-***
+## 验证与运维
 
-## ⚙️ Environment Variables
-
-### Backend
-
-| Variable                    | Description           |
-| --------------------------- | --------------------- |
-| `LLM_BASE_URL`              | LLM API 地址            |
-| `LLM_API_KEY`               | LLM API Key           |
-| `LLM_MODEL`                 | 聊天模型                  |
-| `EMBEDDING_BASE_URL`        | Embedding API         |
-| `EMBEDDING_MODEL`           | 向量模型                  |
-| `RERANK_MODEL`              | 重排模型                  |
-| `DATABASE_URL`              | PostgreSQL 连接         |
-| `VECTOR_STORE`              | 向量数据库类型               |
-| `MILVUS_*`                  | Milvus 配置             |
-| `ONLYOFFICE_URL`            | OnlyOffice 地址         |
-| `ONLYOFFICE_JWT_SECRET`     | OnlyOffice JWT Secret |
-| `VISION_MODEL_NAME`         | 视觉模型（印章分析，可选）         |
-| `COMPANY_API_TOKEN`         | 企业核验 AppKey（企查查）      |
-| `COMPANY_API_SECRET`        | 企业核验 SecretKey（企查查）   |
-| `KNOWLEDGE_SCORE_THRESHOLD` | 知识库 rerank 阈值（默认 0.6） |
-
-### Frontend
-
-| Variable                   | Description   |
-| -------------------------- | ------------- |
-| `VITE_APP_BACKEND_API_URL` | 后端 API 地址     |
-| `VITE_APP_ONLYOFFICE_URL`  | OnlyOffice 地址 |
-
-***
-
-## 📚 Knowledge Base Initialization
-
-默认配置：
-
-```env
-KNOWLEDGE_SEED_TYPES=law,case
-LAW_SEED_DIRS=社会法,民法典
-CASE_SEED_DIR=data/candidate_55192
-CASE_SEED_LIMIT=10
-```
-
-### 仅初始化法律法规
-
-```env
-KNOWLEDGE_SEED_TYPES=law
-```
-
-### 仅初始化裁判文书
-
-```env
-KNOWLEDGE_SEED_TYPES=case
-```
-
-### 初始化指定法律目录
-
-```env
-LAW_SEED_DIRS=经济法,行政法
-```
-
-***
-
-## 🧩 Built-in Dataset
-
-默认仓库仅包含部分法律法规与裁判文书数据。
-
-完整数据请额外拉取：
-
-```bash
-git clone https://github.com/xiaodingfeng/contract-review-laws.git
-```
-
-示例合同文件：
-
-```text
-offer-demo.docx
-```
-
-***
-
-## 🛠️ Build
-
-```bash
-cd frontend
-
+```powershell
+npm test                    # 解析、网关、引用校验及报告映射
+npm run test:integration    # 独立 PostgreSQL 测试库；需要 pg_dump/pg_restore
 npm run build
+npm audit --omit=dev
+npm run openapi
+npm run backup
+npm run restore:drill       # 独立空库恢复演练
 ```
 
-当前构建配置：
+备份工具可通过 `scripts/postgres-tools.ps1` 从 PostgreSQL 官方 EDB 发行包准备。恢复只能指向独立空库与独立空目录。日常备份默认保留 30 天；迁移和升级前保管数据库、不可变原件与原 `TOKEN_SECRET`。
 
-- Vite ESM
-- 路由懒加载
-- Rollup Manual Chunks
-- 第三方依赖拆包优化
+Docker / WSL2 当前尚未就绪，Compose 已提供但未完成实际容器启动验证。上线还需要两类各至少 20 份法务标注合同、正式规则及模板、指定模型配置、钉钉应用权限与真实审批联调。分类 95%、高风险召回 95% 等为验收目标，尚无真实样本评测证明。
 
-***
-
-## 🔐 Security Notes
-
-- 不要提交：
-  - `.env`
-  - API Key
-  - 数据库密码
-  - 上传文件
-  - Docker 数据目录
-- 联网搜索：
-  - 仅用于公开信息检索
-  - 涉及敏感内容时自动拒绝
-- 数据库存储：
-  - 仅保存路径与元数据
-  - 不保存文件二进制内容
-
-***
-
-## 📄 License
-
-MIT
-
-***
-
-## ⭐ Acknowledgements
-
-- OnlyOffice
-- Milvus
-- OpenAI
-- Vue.js
-- PostgreSQL
-- Element Plus
-
-***
-
-## ⭐ Star History
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/chart?repos=xiaodingfeng/contract-review&type=date&legend=top-left&sealed_token=ss0QmgJTyGQ2QoMe5CY8kK6ncujDCEClp5r_2zWZOBhfAziQm6MlW8IpWrv4QkylbQ9Bqb0168_b2qgMTOplmjbW2zvx3v6u1nsZL1XjmOILDrQRhW1lUQ)](https://www.star-history.com/?repos=xiaodingfeng%2Fcontract-review&type=date&legend=top-left)
+反馈处理请见 [反馈与评测使用说明](docs/反馈与评测使用说明.md)。
