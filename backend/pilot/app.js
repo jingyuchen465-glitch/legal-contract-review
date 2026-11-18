@@ -43,7 +43,7 @@ function createApp(db, { sessionName = 'legal.sid' } = {}) {
   app.post('/api/auth/logout', wrap(async (req, res) => { await new Promise((resolve, reject) => req.session.destroy(e => e ? reject(e) : resolve())); res.clearCookie(sessionName).json({ ok: true }); }));
   app.use('/api', office.publicRouter(db));
   app.use('/api', (req, res, next) => req.user ? next() : res.status(401).json({ code: 'LOGIN_REQUIRED', message: '请先登录' }));
-  app.use('/api', require('./dingtalk-account').accountRouter(db), office.privateRouter(db), router(db));
+  app.use('/api', require('./dingtalk-account').accountRouter(db), office.privateRouter(db), require('./word-review').router(db), router(db));
   app.use('/api', (req, res) => res.status(404).json({ code: 'NOT_FOUND', message: '接口不存在' }));
   const dist = path.resolve(__dirname, '../../frontend/dist');
   if (fs.existsSync(dist)) { app.use(express.static(dist)); app.get('*', (req, res) => res.sendFile(path.join(dist, 'index.html'))); }

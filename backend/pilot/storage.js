@@ -6,7 +6,14 @@ const { findType } = require('./catalog');
 const { fail } = require('./errors');
 const sha256 = buffer => createHash('sha256').update(buffer).digest('hex');
 function safeName(name) {
-  const clean = path.basename(String(name).replace(/\\/g, '/')).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/, '').slice(0, 160);
+  const source = path.basename(String(name).replace(/\\/g, '/')).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/, '');
+  const extension = path.extname(source).slice(0, 16), stem = source.slice(0, source.length - path.extname(source).length);
+  let shortened = '';
+  for (const character of stem) {
+    if (shortened.length + character.length + extension.length > 160 || Buffer.byteLength(shortened + character + extension, 'utf8') > 200) break;
+    shortened += character;
+  }
+  const clean = shortened + extension;
   return !clean || /^(con|prn|aux|nul|com\d|lpt\d)(\.|$)/i.test(clean) ? `file_${clean || 'document'}` : clean;
 }
 function localPath(key) {
@@ -51,13 +58,5 @@ async function initializeDirectories() {
   const { catalog } = require('./catalog');
   await Promise.all(['objects', 'derived', 'backups', 'classified/待人工确认分类', ...catalog.flatMap(c => c.types.map(t => `classified/${c.name}/${t.name}`))].map(p => fs.mkdir(path.join(config.dataRoot, p), { recursive: true })));
 }
-function validateUpload(file) {
-  if (!file?.buffer?.length) fail(400, 'EMPTY_FILE', '请选择非空文件');
-  const ext = path.extname(file.originalname).toLowerCase();
-  if (!['.pdf', '.docx'].includes(ext)) fail(400, 'UNSUPPORTED_FILE_TYPE', '仅支持 PDF、DOCX；请将旧版 DOC 转换为 DOCX');
-  if (file.buffer.length > 50 * 1024 * 1024) fail(413, 'FILE_TOO_LARGE', '文件不能超过 50MB');
-  if (ext === '.pdf' && file.buffer.subarray(0, 1024).indexOf('%PDF-') < 0) fail(400, 'INVALID_PDF', '文件内容不是有效 PDF');
-  if (ext === '.docx' && (file.buffer.length < 2 || file.buffer.readUInt16LE(0) !== 0x4b50)) fail(400, 'INVALID_DOCX', '文件内容不是有效 DOCX');
-  return ext === '.pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-}
+const { validateUpload } = require('./file-formats');
 module.exports = { sha256, safeName, localPath, put, read, exportVersion, archiveClassifiedVersion, exportReport, initializeDirectories, validateUpload };

@@ -1,4 +1,6 @@
 const { test, before, after } = require('node:test');
+// Explicitly exercise the retained legacy intake mode.
+process.env.AUTO_REVIEW_DINGTALK_ENABLED = 'false';
 const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 const path = require('node:path');
@@ -15,7 +17,7 @@ let root, db, name, handle, alice, bob, admin, aliceAgent, csrf;
 const pdf = Buffer.from('%PDF-1.4\n% test-only fixture');
 const resolve = async () => ({ userId: 'ding-alice', displayName: 'Alice 钉钉' });
 const bindingInput = async user => { const url = new URL((await startBinding(db, user)).url); return { code: 'fixture-code', state: url.searchParams.get('state') }; };
-const files = [{ fileId: 'pdf', fileName: '合同.PDF' }, { fileId: 'docx', fileName: 'invalid.docx' }, { fileId: 'xlsx', fileName: '清单.xlsx' }];
+const files = [{ fileId: 'pdf', fileName: '合同.PDF' }, { fileId: 'docx', fileName: 'invalid.docx' }, { fileId: 'xlsx', fileName: '清单.xlsx' }, { fileId: 'zip', fileName: '压缩包.zip' }];
 const detail = (userIds = ['ding-alice'], attachments = files) => ({ status: 'RUNNING', tasks: userIds.map(userId => ({ userId, status: 'NEW', result: 'NONE' })), formComponentValues: [{ name: '任意附件名称', value: JSON.stringify(attachments) }] });
 async function intake(instance, info, attachment = async () => pdf, app = 'test-app') {
   const id = await persistEvent(db, { processInstanceId: instance, staffId: 'ding-alice', eventType: 'bpms_task_change' }, randomUUID(), app);
@@ -67,12 +69,15 @@ test('expired state, app changes and unbinding during OAuth resolution prevent b
   await bind(alice);
 });
 
-test('collects valid files despite one failure, skips spreadsheets, retries by hash without duplicating', async () => {
+test('collects spreadsheets and PDFs despite one failure, skips unsupported files, retries by hash without duplicating', async () => {
   let downloads = 0;
-  const event = await intake('mixed-files', detail(), async () => { downloads++; return pdf; });
+  const AdmZip = require('adm-zip'), workbook = new AdmZip(); workbook.addFile('xl/workbook.xml', Buffer.from('<workbook/>'));
+  const event = await intake('mixed-files', detail(), async (_id, file) => { downloads++; return file.fileId === 'xlsx' ? workbook.toBuffer() : pdf; });
   assert.equal((await db('la_outbox').whereRaw("payload->>'eventId' = ?", [event.id]).first()).queue, 'integration-live');
-  assert.equal(event.status, 'waiting_confirmation'); assert.deepEqual([event.summary.collected, event.summary.skipped, event.summary.failed], [1, 1, 1]); assert.equal(downloads, 2);
-  const contract = await db('la_contracts').where({ source: 'dingtalk', submitter_id: alice.id }).first(); assert.deepEqual(contract.background, {});
+  assert.equal(event.status, 'waiting_confirmation'); assert.deepEqual([event.summary.collected, event.summary.skipped, event.summary.failed], [2, 1, 1]); assert.equal(downloads, 3);
+  const spreadsheet = await db('la_contracts').where({ title: '清单.xlsx' }).first();
+  assert.equal((await db('la_versions').where({ id: spreadsheet.current_version_id }).first()).conversion.status, 'pending');
+  const contract = await db('la_contracts').where({ title: '合同.PDF', source: 'dingtalk', submitter_id: alice.id }).first(); assert.deepEqual(contract.background, {});
   const otherFiles = [{ fileId: 'pdf', fileName: '合同.PDF' }, { fileId: 'second-pdf', fileName: '附件.pdf' }];
   const retry = await intake('mixed-files', detail(['ding-alice'], otherFiles));
   assert.equal(retry.status, 'completed'); assert.equal(retry.summary.duplicate, 1); assert.equal(retry.summary.collected, 1);
@@ -80,10 +85,13 @@ test('collects valid files despite one failure, skips spreadsheets, retries by h
   assert.equal(updated.summary.collected, 1);
   assert.equal(Number((await db('la_versions').where({ contract_id: contract.id }).count('* as n').first()).n), 2);
   // Actual background checks happen after parsing; collection itself is already complete.
-  const AdmZip = require('adm-zip'), zip = new AdmZip(); zip.addFile('word/document.xml', Buffer.from('<w:document xmlns:w="urn:word"><w:body><w:p><w:r><w:t>测试合同</w:t></w:r></w:p></w:body></w:document>'));
+  const zip = new AdmZip(); zip.addFile('word/document.xml', Buffer.from('<w:document xmlns:w="urn:word"><w:body><w:p><w:r><w:t>测试合同</w:t></w:r></w:p></w:body></w:document>'));
   await intake('docx-background', detail(['ding-alice'], [{ fileId: 'valid-docx', fileName: '测试.docx' }]), async () => zip.toBuffer());
   const c = await db('la_contracts').where({ title: '测试.docx' }).first();
-  await processReview(db, c.current_review_id); assert.equal((await db('la_reviews').where({ id: c.current_review_id }).first()).error_code, 'BACKGROUND_REQUIRED');
+  assert.ok(c.current_review_id);
+  assert.equal(c.current_preanalysis_id,null);
+  assert.equal((await db('la_reviews').where({id:c.current_review_id}).first()).engine,'harness-v1');
+  assert.equal((await db('la_outbox').whereRaw("payload->>'reviewId' = ?",[c.current_review_id]).first()).queue,'agent-review');
 });
 
 test('forged event recipient, completed tasks, missing bindings and wrong app never download', async () => {

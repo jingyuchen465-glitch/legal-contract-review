@@ -23,8 +23,20 @@ function canRead(user, c) {
   return user && (hasRole(user, 'admin') || c.submitter_id === user.id || c.reviewer_id === user.id || (hasRole(user, 'legal') && (user.department === '*' || (user.department && user.department === c.department))));
 }
 async function accessible(db, user, id, lock = false) {
+  if (lock) {
+    const initial = await db('la_contracts').where({ id }).first();
+    if (!initial || !(canRead(user, initial) || await assignedJointIntake(db, user, initial))) fail(404, 'CONTRACT_NOT_FOUND', '合同不存在或没有访问权限');
+    if (initial.source_data?.jointIntakeId) await db.raw('SELECT pg_advisory_xact_lock(hashtext(?))', ['joint-intake:' + initial.source_data.jointIntakeId]);
+  }
   let query = db('la_contracts').where({ id }); if (lock) query = query.forUpdate();
-  const c = await query.first(); if (!c || !canRead(user, c)) fail(404, 'CONTRACT_NOT_FOUND', '合同不存在或没有访问权限'); return c;
+  const c = await query.first(); if (!c || !(canRead(user, c) || await assignedJointIntake(db, user, c))) fail(404, 'CONTRACT_NOT_FOUND', '合同不存在或没有访问权限'); return c;
+}
+async function assignedJointIntake(db, user, c) {
+  if (!hasRole(user, 'legal') || !c.source_data?.jointIntakeId) return false;
+  // The assigned lawyer must be able to read the approval's supporting files
+  // and return to its overview; access never crosses the intake boundary.
+  return !!await db('la_review_groups as g').join('la_intake_documents as d', 'd.id', 'g.main_document_id').join('la_contracts as main', 'main.id', 'd.contract_id')
+    .where({ 'g.intake_id': c.source_data.jointIntakeId, 'g.active': true, 'main.reviewer_id': user.id }).first('g.id');
 }
 function assertRevision(record, revision) { if (!Number.isInteger(revision) || record.revision !== revision) fail(409, 'REVISION_CONFLICT', '记录已更新，请刷新后重试'); }
 async function audit(db, actor, action, entityId, details = {}) { await db('la_audit').insert({ actor_id: actor?.id || null, action, entity_id: entityId || null, details: JSON.stringify(details) }); }

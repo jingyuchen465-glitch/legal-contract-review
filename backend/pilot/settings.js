@@ -103,11 +103,12 @@ async function publicSettings(db) {
   const checks = checksRow?.value || {}, modelCheck = checks.model;
   const bound = await db('la_dingtalk_accounts as a').join('la_users as u','a.user_id','u.id').where({'a.client_id':ding.clientId || '', 'u.active':true}).whereRaw("jsonb_exists( u.roles, 'admin' )").count('* as count').first();
   return {
+    agent: require('./agent/config').publicSettings(await require('./agent/config').settings(db)),
     model: { baseUrl: p.baseUrl || '', name: p.name || '', hasKey: !!p.key, concurrency: config.model.concurrency, updatedAt: iso(modelRow?.updated_at), check: modelCheck?.fingerprint === fingerprint([p.baseUrl,p.name,p.key]) ? modelCheck.result : null },
     jev: { model: config.jev.name, hasKey: !!config.jev.key },
     dingtalk: { boundAccounts: Number(bound.count), callbackUrl: new URL('/dingtalk/callback', config.publicUrl).href, enabled: ding.enabled, clientId: ding.clientId || '', hasCredentials: !!ding.clientId && !!ding.secret, hasSecret: !!ding.secret, connectionUpdatedAt: iso(connectionRow?.updated_at), runtime: runtimeRow?.value || null },
     archive,
-    services: { ocrConfigured: !!config.ocrUrl && !!config.ocrToken, officeConfigured: !!config.office.url && !!config.office.secret, storageRoot: config.dataRoot, milvusConfigured: !!process.env.MILVUS_ADDRESS, embeddingConfigured: !!config.embeddingModel, ocrUrl: config.ocrUrl || '', officeUrl: config.office.url || '', milvusAddress: process.env.MILVUS_ADDRESS || '', embeddingModel: config.embeddingModel || '' },
+    services: { converterConfigured: !!config.converter.url && !!config.converter.token && config.converter.token.length >= 32, converterUrl: config.converter.url || '', ocrConfigured: !!config.ocrUrl && !!config.ocrToken, officeConfigured: !!config.office.url && !!config.office.secret, storageRoot: config.dataRoot, milvusConfigured: !!process.env.MILVUS_ADDRESS, embeddingConfigured: !!config.embeddingModel, ocrUrl: config.ocrUrl || '', officeUrl: config.office.url || '', milvusAddress: process.env.MILVUS_ADDRESS || '', embeddingModel: config.embeddingModel || '' },
   };
 }
 async function saveModelCheck(db, candidate, check) {
@@ -122,12 +123,12 @@ async function serviceDiagnostics(db, { fetchImpl = fetch } = {}) {
   checks.push(measure('database','业务数据库',async start => { await db.raw('select 1'); return result('success','数据库连接正常',start); }));
   checks.push(measure('worker','异步任务 Worker',async start => { const value = (await readSetting(db,'worker_heartbeat'))?.value; const fresh = value?.lastSeen && Date.now()-new Date(value.lastSeen).getTime() < 90000; return result(fresh?'success':'warning',fresh?'任务进程在线':'未收到近期心跳，请启动或检查 Worker',start); }));
   checks.push(measure('storage','本机文件存储',async start => { await fs.access(config.dataRoot,constants.R_OK|constants.W_OK); const stat=await fs.statfs(config.dataRoot); return result('success',`目录可读写，可用空间约 ${(Number(stat.bavail)*Number(stat.bsize)/1024**3).toFixed(1)} GB`,start); }));
-  for (const [id,name,url,configured,path] of [['ocr','扫描识别 OCR',config.ocrUrl,!!config.ocrUrl&&!!config.ocrToken,'/health'],['office','在线编辑 OnlyOffice',config.office.internalUrl,!!config.office.url&&!!config.office.secret,'/healthcheck']]) {
+  for (const [id,name,url,configured,path] of [['converter','Office 格式转换',config.converter.url,!!config.converter.url&&!!config.converter.token&&config.converter.token.length>=32,'/health'],['ocr','扫描识别 OCR',config.ocrUrl,!!config.ocrUrl&&!!config.ocrToken,'/health'],['office','在线编辑 OnlyOffice',config.office.internalUrl,!!config.office.url&&!!config.office.secret,'/healthcheck']]) {
     checks.push(measure(id,name,async start => {
-      if (!configured) return result('unconfigured','尚未配置；不影响文字版合同的手动上传',start);
+      if (!configured) return result('unconfigured',id==='converter'?'尚未配置；PDF/DOCX 可直接处理，其他 Office 格式需要转换服务':'尚未配置；不影响文字版合同的手动上传',start);
       const response=await fetchImpl(url.replace(/\/$/,'')+path,{redirect:'error',signal:AbortSignal.timeout(8000)});
       let valid=response.ok; if(id==='office') valid=valid&&(await response.text()).trim()==='true';else { const value=await responseJson(response);valid=valid&&value.ok===true; }
-      return result(valid?'success':'error',valid?(id==='ocr'?'服务可达；扫描识别模型仍需样本验证':'文档服务可达；在线编辑与回调仍需样本验证'):'服务健康检查未通过，请检查部署',start);
+      return result(valid?'success':'error',valid?(id==='converter'?'转换引擎可用；复杂排版仍需结合原件核实':id==='ocr'?'服务可达；扫描识别模型仍需样本验证':'文档服务可达；在线编辑与回调仍需样本验证'):'服务健康检查未通过，请检查部署',start);
     }));
   }
   checks.push(measure('milvus','知识检索 Milvus',async start => {

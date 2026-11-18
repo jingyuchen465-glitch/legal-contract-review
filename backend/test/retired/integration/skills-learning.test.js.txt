@@ -1,0 +1,195 @@
+const { test, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const supertest = require('supertest');
+const { config } = require('../../pilot/config');
+const { createDb } = require('../../pilot/db');
+const { migrate } = require('../../pilot/cli');
+const { hashPassword } = require('../../pilot/auth');
+const { createApp } = require('../../pilot/app');
+const { createDraft } = require('../../pilot/rules');
+const { enqueueReview, processReview } = require('../../pilot/workflow');
+const { enqueueLearning, processLearning, buildSource } = require('../../pilot/learning');
+const { processEvaluation } = require('../../pilot/evaluation');
+let root, db, database, handle, agent, csrf, user, original;
+const document = { blocks: [{ id: 'b1', text: '验收合格后30日内付款。' }], parserVersion: 'fixture' };
+const background = { ourEntity: '合同所列甲方', perspective: '采购方', purpose: '设备采购' };
+const rule = { id: 'payment', title: '付款条件', instruction: '核对验收和付款条件', severity: 'medium', mandatory: true, tags: [] };
+const call = (method, url, body) => agent[method]('/api' + url).set('X-CSRF-Token', csrf).send(body);
+const publishRule = async p => { await call('post', `/rule-pack-versions/${p.id}/submit`, { revision: p.revision }).expect(200); await call('post', `/rule-pack-versions/${p.id}/publish`, { revision: p.revision + 1 }).expect(200); };
+const publishSkill = async p => { await call('post', `/skill-pack-versions/${p.id}/submit`, { revision: p.revision }).expect(200); await call('post', `/skill-pack-versions/${p.id}/publish`, { revision: p.revision + 1, commonConfirmed: true }).expect(200); };
+async function fixture(outcome = 'conditional') {
+  const contractId = randomUUID(), versionId = randomUUID(), reviewId = randomUUID(), findingId = randomUUID();
+  await db('la_contracts').insert({ id: contractId, number: 'SKILL-TEST-' + contractId, title: '虚构经验验收样本', background: JSON.stringify(background), classification: JSON.stringify({ typeId: 'procurement', tags: [], confirmed: true, perspectiveConfirmed: true, versionId }) });
+  await db('la_versions').insert({ id: versionId, contract_id: contractId, version_no: 1, kind: 'contract', filename: 'fixture.docx', sha256: 'a'.repeat(64), storage_key: 'objects/fixture', media_type: 'application/docx', size: 10, source_action: 'fixture', parsed: JSON.stringify(document) });
+  await db('la_reviews').insert({ id: reviewId, contract_id: contractId, version_id: versionId, status: 'completed', coverage: JSON.stringify({ complete: true }), snapshot: JSON.stringify({ background, classification: { typeId: 'procurement', tags: [] }, rules: [rule] }) });
+  await db('la_findings').insert({ id: findingId, review_id: reviewId, rule_id: rule.id, title: rule.title, check_status: 'fail', severity: 'medium', kind: 'clause', evidence: JSON.stringify([{ blockId: 'b1', quote: '验收合格后30日内付款' }]), reason: '未见起算点', disposition: JSON.stringify({ action: 'reject', reason: '已有验收起算点' }) });
+  await db('la_contracts').where({ id: contractId }).update({ current_review_id: reviewId, current_version_id: versionId });
+  const c = await db('la_contracts').where({ id: contractId }).first();
+  const decision = (await call('post', `/reviews/${reviewId}/decision`, { revision: c.revision, outcome, reason: outcome === 'disagree' ? '拒绝无验收保护的条款' : '结合约定确认', conditions: outcome === 'conditional' ? '须先确认验收合格' : '' }).expect(201)).body;
+  const task = await db('la_learning_tasks').where({ decision_id: decision.id }).first();
+  return { contractId, versionId, reviewId, findingId, decision, task };
+}
+const proposalsFor = f => [{ key: 'a', kind: 'skill', scope: 'type', title: '核对起算点', reason: '法务驳回孤立判断的误报', method: '先核对验收条款，再判断付款期限；仅在验收合格且条件落实后接受。', conditions: ['已明确验收条件'], exclusions: ['验收条件尚未达成或被拒绝时不得视为认可'], examples: ['附条件接受：在【验收条件】达成后【待确认期限】内付款。'], evidence: [{ versionId: f.versionId, blockId: 'b1', quote: '验收合格后30日内付款' }], findingIds: [f.findingId], dependsOn: [] }];
+async function extract(f, proposals = proposalsFor(f)) { let seen; await processLearning(db, f.task.id, { gateway: { distill: async input => { seen = input; return proposals; } } }); return { task: await db('la_learning_tasks').where({ id: f.task.id }).first(), seen }; }
+before(async () => {
+  root = createDb(); database = 'legal_test_skills_' + randomUUID().replaceAll('-', ''); await root.raw(`CREATE DATABASE "${database}"`);
+  const url = new URL(config.databaseUrl); url.pathname = '/' + database; config.databaseUrl = url.href; db = createDb(); await migrate(db);
+  user = { id: randomUUID(), username: 'skills-admin', display_name: '测试法务', roles: ['admin'], department: '' }; const password = 'skills-test-password-123';
+  await db('la_users').insert({ ...user, roles: JSON.stringify(user.roles), password_hash: await hashPassword(password) });
+  handle = createApp(db); agent = supertest.agent(handle.app); const session = await agent.get('/api/auth/session'); csrf = (await agent.post('/api/auth/login').set('X-CSRF-Token', session.body.csrf).send({ username: user.username, password }).expect(200)).body.csrf;
+  original = await db.transaction(trx => createDraft(trx, 'skill-procurement', { name: '采购付款规则', scope: { level: 'type', typeIds: ['procurement'] }, rules: [rule], knowledge: [] }, user.id)); await publishRule(original);
+});
+after(async () => { await handle?.close(); await db?.destroy(); if (root && database) { await root.raw('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ? AND pid <> pg_backend_pid()', [database]); await root.raw(`DROP DATABASE "${database}"`); } await root?.destroy(); });
+test('migration starts empty and disabled; enabling never backfills; finalization writes one outbox task per decision', async () => {
+  assert.deepEqual((await call('get', '/skill-packs').expect(200)).body, []); assert.equal((await call('get', '/learning-settings')).body.enabled, false);
+  const before = await fixture(); assert.equal(before.task, undefined);
+  await call('put', '/learning-settings', { enabled: true, updatedAt: null }).expect(200);
+  assert.equal((await db('la_learning_tasks')).length, 0);
+  const f = await fixture(), c = await db('la_contracts').where({ id: f.contractId }).first(), run = await db('la_reviews').where({ id: f.reviewId }).first();
+  await db.transaction(trx => enqueueLearning(trx, c, run, f.decision, user)); await db.transaction(trx => enqueueLearning(trx, c, run, f.decision, user));
+  assert.equal((await db('la_learning_tasks').where({ decision_id: f.decision.id })).length, 1);
+  assert.equal((await db('la_outbox').where({ queue: 'learning' })).length, 1);
+  await call('post', `/reviews/${f.reviewId}/decision`, { revision: c.revision, outcome: 'agree' }).expect(409);
+});
+test('all outcomes retain context; exact extraction, edited proposal, skill publication and next review form a closed loop', async () => {
+  for (const outcome of ['agree', 'conditional', 'disagree']) { const f = await fixture(outcome), result = await extract(f); assert.equal(result.task.status, 'awaiting_confirmation'); assert.equal(result.seen.decision.outcome, outcome); if (outcome === 'conditional') assert.equal(result.seen.decision.conditions, '须先确认验收合格'); }
+  const f = await fixture(), result = await extract(f), p = result.task.proposals[0];
+  const changed = { revision: result.task.revision, method: p.method + '先检查交叉引用条款。' };
+  await call('put', `/learning-tasks/${f.task.id}/proposals/${p.id}`, changed).expect(200);
+  await call('put', `/learning-tasks/${f.task.id}/proposals/${p.id}`, changed).expect(409);
+  let task = await db('la_learning_tasks').where({ id: f.task.id }).first();
+  const adopted = (await call('post', `/learning-tasks/${task.id}/proposals/${p.id}/adopt`, { revision: task.revision }).expect(200)).body;
+  const draft = await db('la_skill_versions').where({ id: adopted.draftVersionId }).first(); assert.equal(draft.state, 'draft'); assert.equal(draft.skills[0].method, changed.method);
+  const sourceTask = (await call('get', '/learning-tasks?contractId=' + f.contractId).expect(200)).body[0];
+  assert.equal(sourceTask.confirmedBy, user.display_name); assert.equal(sourceTask.confirmedVersionNo, 1); assert.match(sourceTask.contractTypeName, /采购/);
+  assert.equal(sourceTask.proposals[0].draftState, 'draft');
+  assert.equal((await call('get', '/review-plan?typeId=procurement').expect(200)).body.skillPacks.length, 0);
+  await publishSkill(draft);
+  const publishedTask = (await call('get', '/learning-tasks?contractId=' + f.contractId).expect(200)).body[0];
+  assert.equal(publishedTask.proposals[0].draftState, 'published');
+  assert.equal((await db('la_learning_tasks').where({id:f.task.id}).first()).proposals[0].draftState, undefined);
+  const c = await db('la_contracts').where({ id: f.contractId }).first(), queued = await db.transaction(trx => enqueueReview(trx, c, user.id));
+  await db('la_contracts').where({ id: c.id }).update({ current_version_id: null }); let seen;
+  await processReview(db, queued, { gateway: { classify: async () => ({ typeId: 'procurement', tags: [] }), review: async (...args) => { seen = args[6]; return { checks: [], coverage: { complete: true } }; } } });
+  assert.equal(seen[0].id, draft.id); assert.equal(seen[0].skills[0].method, changed.method);
+  assert.equal((await call('get', `/skill-pack-versions/${draft.id}/sources`).expect(200)).body[0].contractId, f.contractId);
+  assert.match((await call('get', `/skill-pack-versions/${draft.id}/export`).expect(200)).text, /先检查交叉引用/);
+});
+test('queued tasks, retries and evaluation keep frozen skills when newer versions are published', async () => {
+  const f = await fixture(), c = await db('la_contracts').where({ id: f.contractId }).first(), old = await db('la_skill_versions').where({ state: 'published' }).first();
+  const queued = await db.transaction(trx => enqueueReview(trx, c, user.id));
+  const draft = (await call('post', `/skill-packs/${old.pack_id}/versions`, { ...old, baseVersionId: old.id, skills: [{ ...old.skills[0], method: '新版方法：核对验收日期再计算付款日期。' }] }).expect(201)).body; await publishSkill(draft);
+  const newer = await db.transaction(trx => enqueueReview(trx, c, user.id)); await db('la_contracts').where({ id: c.id }).update({ current_version_id: null });
+  const seen = []; const gateway = { classify: async () => ({ typeId: 'procurement', tags: [] }), review: async (...args) => { seen.push(args[6]); return { checks: [], coverage: { complete: true } }; } };
+  await processReview(db, queued, { gateway }); await db('la_reviews').where({ id: queued }).update({ status: 'queued' }); await processReview(db, queued, { gateway }); await processReview(db, newer, { gateway });
+  assert.deepEqual(seen.map(p => p[0].id), [old.id, old.id, draft.id]);
+  await call('post', '/evaluation-cases', { name: '虚构技能验证', split: 'development', document, expected: { typeId: 'procurement', tags: [], riskRuleIds: [], highRiskRuleIds: [], background } }).expect(201);
+  const evaluation = (await call('post', '/evaluations', { split: 'development', adapters: ['llm'], includeReview: true }).expect(202)).body;
+  await processEvaluation(db, evaluation.id, { gateway }); const saved = await db('la_evaluations').where({ id: evaluation.id }).first(); assert.equal(saved.status, 'completed'); assert.equal(seen.at(-1)[0].id, draft.id); assert.equal(saved.config.skillVersions[0].id, draft.id);
+});
+test('multiple rule and skill proposals merge without losing entries; unpublished rule dependencies block skill publication', async () => {
+  const f = await fixture(), base = proposalsFor(f)[0], proposals = [
+    { ...base, key: 'r1', kind: 'rule', title: '验收记录', method: '', instruction: '核对验收记录是否明确', targetPackId: original.pack_id, examples: [], dependsOn: [] },
+    { ...base, key: 'r2', kind: 'rule', title: '付款起算', method: '', instruction: '检查付款起算条件', targetPackId: original.pack_id, examples: [], dependsOn: [] },
+    { ...base, key: 's1', title: '结合验收记录检查', method: '逐项对应验收记录与付款起算点。', dependsOn: ['r1', 'r2'] },
+    { ...base, key: 's2', title: '核对附条件接受', method: '先核对最终结论中的验收条件，不将附条件接受作为无条件范例。', dependsOn: [] }
+  ];
+  let { task } = await extract(f, proposals); assert.equal(task.status, 'awaiting_confirmation');
+  const adopted = []; for (const p of task.proposals) { const a = (await call('post', `/learning-tasks/${task.id}/proposals/${p.id}/adopt`, { revision: task.revision }).expect(200)).body; adopted.push(a); task = await db('la_learning_tasks').where({ id: task.id }).first(); }
+  assert.equal(adopted[0].draftVersionId, adopted[1].draftVersionId); assert.equal(adopted[2].draftVersionId, adopted[3].draftVersionId);
+  const ruleDraft = await db('la_rule_versions').where({ id: adopted[0].draftVersionId }).first(), skillDraft = await db('la_skill_versions').where({ id: adopted[2].draftVersionId }).first(); assert.equal(ruleDraft.rules.length, 3); assert.ok(skillDraft.skills.length >= 3);
+  await call('post', `/skill-pack-versions/${skillDraft.id}/submit`, { revision: skillDraft.revision }).expect(200);
+  const rejected = await call('post', `/skill-pack-versions/${skillDraft.id}/publish`, { revision: skillDraft.revision + 1 }).expect(409); assert.equal(rejected.body.code, 'SKILL_RULE_REQUIRED');
+  await publishRule(ruleDraft); await call('post', `/skill-pack-versions/${skillDraft.id}/publish`, { revision: skillDraft.revision + 1 }).expect(200);
+  assert.equal((await db('la_feedback').where({ draft_rule_version_id: ruleDraft.id, state: 'published' })).length, 2);
+});
+test('stale skill proposals and concurrent edits cannot replace updated versions; failures preserve final decisions and retry safely', async () => {
+  const f = await fixture(), { task } = await extract(f), old = await db('la_skill_versions').where({ state: 'published' }).first();
+  const draft = (await call('post', `/skill-packs/${old.pack_id}/versions`, { ...old, baseVersionId: old.id }).expect(201)).body;
+  await call('put', `/skill-pack-versions/${draft.id}`, { ...draft, name: '人工补充方法' }).expect(200);
+  await call('put', `/skill-pack-versions/${draft.id}`, { ...draft, name: '过期修改' }).expect(409);
+  await publishSkill(await db('la_skill_versions').where({ id: draft.id }).first());
+  assert.equal((await call('post', `/learning-tasks/${task.id}/proposals/${task.proposals[0].id}/adopt`, { revision: task.revision }).expect(409)).body.code, 'SKILL_BASE_CHANGED');
+  const failed = await fixture('disagree'); await processLearning(db, failed.task.id, { gateway: { distill: async () => { throw new Error('fixture failure'); } } });
+  let row = await db('la_learning_tasks').where({ id: failed.task.id }).first(); assert.equal(row.status, 'failed'); assert.equal((await db('la_decisions').where({ id: failed.decision.id }).first()).outcome, 'disagree');
+  await call('post', `/learning-tasks/${row.id}/retry`, { revision: row.revision }).expect(200); await processLearning(db, row.id, { gateway: { distill: async () => [] } }); row = await db('la_learning_tasks').where({ id: row.id }).first(); assert.equal(row.status, 'no_change');
+  await processLearning(db, row.id, { gateway: { distill: async () => { throw new Error('should not run twice'); } } }); assert.equal((await db('la_learning_tasks').where({ id: row.id }).first()).status, 'no_change');
+});
+test('source includes nearest ancestor with human review, and common promotion needs explicit confirmation', async () => {
+  const f = await fixture(); const source = await buildSource(db, f.task); assert.equal(source.comparison, 'no_previous_version');
+  const ancestorId = randomUUID(), ancestorReview = randomUUID();
+  await db('la_versions').insert({ id: ancestorId, contract_id: f.contractId, version_no: 0, kind: 'contract', filename: 'previous.docx', sha256: 'b'.repeat(64), storage_key: 'objects/previous', media_type: 'application/docx', size: 10, source_action: 'fixture', parsed: JSON.stringify({ ...document, blocks: [{ id: 'b9', text: document.blocks[0].text }] }) });
+  await db('la_reviews').insert({ id: ancestorReview, contract_id: f.contractId, version_id: ancestorId, status: 'completed', snapshot: '{}' });
+  await db('la_findings').insert({ id: randomUUID(), review_id: ancestorReview, rule_id: 'payment', title: '付款检查', check_status: 'fail', severity: 'medium', kind: 'clause', reason: '原稿复核', disposition: JSON.stringify({ action: 'correct', reason: '补充验收条件' }) });
+  await db('la_versions').where({ id: f.versionId }).update({ parent_id: ancestorId }); const updated = await buildSource(db, f.task); assert.equal(updated.comparison, 'reviewed_ancestor'); assert.equal(updated.documents[1].id, ancestorId);
+  const { task } = await extract(f, [{ ...proposalsFor(f)[0], scope: 'common' }]);
+  await call('post', `/learning-tasks/${task.id}/proposals/${task.proposals[0].id}/adopt`, { revision: task.revision }).expect(400);
+  const a = (await call('post', `/learning-tasks/${task.id}/proposals/${task.proposals[0].id}/adopt`, { revision: task.revision, commonConfirmed: true }).expect(200)).body, draft = await db('la_skill_versions').where({ id: a.draftVersionId }).first();
+  await call('post', `/skill-pack-versions/${draft.id}/submit`, { revision: draft.revision }).expect(200); await call('post', `/skill-pack-versions/${draft.id}/publish`, { revision: draft.revision + 1 }).expect(400);
+});
+
+test('offline uploads compare the immediate previous contract even without human dispositions and keep both sides in learning inputs', async () => {
+  const f = await fixture(), parentId = randomUUID(), olderId = randomUUID();
+  for (const [id, versionNo, parent, text] of [[olderId, -1, null, '更早的付款条件。'], [parentId, 0, olderId, '收到货物后立即付款。']]) {
+    await db('la_versions').insert({ id, contract_id: f.contractId, version_no: versionNo, parent_id: parent, kind: 'contract', filename: '本机修改前.docx', sha256: 'b'.repeat(64), storage_key: 'unused', media_type: 'application/docx', size: 10, source_action: 'upload', parsed: JSON.stringify({ blocks: [{ id: 'b8', text }] }) });
+  }
+  const olderReview = randomUUID();
+  await db('la_reviews').insert({ id: olderReview, contract_id: f.contractId, version_id: olderId, status: 'completed', snapshot: '{}' });
+  await db('la_findings').insert({ id: randomUUID(), review_id: olderReview, rule_id: 'payment', title: '旧复核', check_status: 'pass', severity: 'low', kind: 'clause', reason: 'fixture', disposition: JSON.stringify({ action: 'accept' }) });
+  await db('la_versions').where({ id: f.versionId }).update({ parent_id: parentId });
+  await db('la_findings').where({ review_id: f.reviewId }).update({ check_status: 'pass', disposition: null });
+  const source = await buildSource(db, f.task);
+  assert.equal(source.comparison, 'previous_version'); assert.equal(source.documents[1].id, parentId);
+  assert.equal(source.comparisonSummary.modified, 1); assert.equal(source.findings.some(p => p.reviewId === olderReview), false);
+  const { task, seen } = await extract(f, [{ ...proposalsFor(f)[0], findingIds: [], reason: '修改稿增加验收条件，修改原因待确认。', evidence: [{ versionId: parentId, blockId: 'b8', quote: '收到货物后立即付款' }, { versionId: f.versionId, blockId: 'b1', quote: '验收合格后30日内付款' }] }]);
+  assert.equal(task.status, 'awaiting_confirmation'); assert.equal(seen.comparison, 'previous_version');
+  assert.equal(seen.blocks.filter(b => b.change === 'modified').length, 2);
+  const page = (await call('get', `/learning-tasks/${task.id}/changes?offset=0&limit=1`).expect(200)).body;
+  assert.equal(page.total, 1); assert.equal(page.items[0].before[0].versionId, parentId); assert.equal(page.items[0].after[0].versionId, f.versionId);
+  const publicTask = (await call('get', '/learning-tasks?contractId=' + f.contractId).expect(200)).body[0];
+  assert.equal(publicTask.sourceContext.previousVersion.id, parentId); assert.equal(publicTask.source, undefined);
+  await call('get', `/learning-tasks/${task.id}/changes?offset=-1`).expect(400);
+});
+test('already covered methods yield no new experience, and a retry preserves resolved proposals without duplicate drafts', async () => {
+  const f = await fixture(), current = await db('la_skill_versions').where({ pack_id: 'review-skill-procurement', state: 'published' }).first(), skill = current.skills[0];
+  const duplicate = { ...proposalsFor(f)[0], title: skill.title, method: skill.method, conditions: skill.conditions, exclusions: skill.exclusions, examples: skill.examples };
+  assert.equal((await extract(f, [duplicate])).task.status, 'no_change');
+  const fresh = await fixture(), { task } = await extract(fresh, [{ ...proposalsFor(fresh)[0], title: '人工漏报记录的核对', method: '核对人工补充的交付与验收记录，逐条检查是否遗漏关联付款条款。' }]);
+  await call('post', `/learning-tasks/${task.id}/proposals/${task.proposals[0].id}/ignore`, { revision: task.revision }).expect(200);
+  const resolved = await db('la_learning_tasks').where({ id: task.id }).first(); await call('post', `/learning-tasks/${task.id}/retry`, { revision: resolved.revision }).expect(200);
+  await extract(fresh, [{ ...proposalsFor(fresh)[0], title: '人工漏报记录的核对', method: '核对人工补充的交付与验收记录，逐条检查是否遗漏关联付款条款。' }]);
+  const repeated = await db('la_learning_tasks').where({ id: task.id }).first(); assert.equal(repeated.status, 'completed'); assert.equal(repeated.proposals.length, 1); assert.equal(repeated.proposals[0].state, 'ignored');
+});
+test('retry upgrades cached role terms without changing confirmed documents, decisions or real-name restrictions', async () => {
+  const f = await fixture(), run = await db('la_reviews').where({ id: f.reviewId }).first();
+  run.snapshot.background.ourEntity = '转租承租方';
+  await db('la_reviews').where({ id: f.reviewId }).update({ snapshot: JSON.stringify(run.snapshot) });
+  f.task.snapshot.background.ourEntity = '转租承租方';
+  const source = await buildSource(db, f.task);
+  assert.ok(!source.restrictedTerms.includes('转租承租方'));
+  // Recreate the legacy failed task and exercise the real retry API and processing path.
+  source.restrictedTerms.push('转租承租方', '虚构承租方有限公司');
+  await db('la_learning_tasks').where({ id: f.task.id }).update({ status: 'failed', source: JSON.stringify(source) });
+  const decision = await db('la_decisions').where({ id: f.decision.id }).first();
+  await call('post', `/learning-tasks/${f.task.id}/retry`, { revision: f.task.revision }).expect(200);
+  const result = await extract(f, [{ ...proposalsFor(f)[0], title: '转租角色隐私校验回归', method: '核对转租承租方是否取得出租方书面同意，并核对授权范围。' }]);
+  assert.equal(result.task.status, 'awaiting_confirmation');
+  assert.ok(!result.task.source.restrictedTerms.includes('转租承租方'));
+  assert.ok(result.task.source.restrictedTerms.includes('虚构承租方有限公司'));
+  assert.deepEqual(result.task.source.documents, source.documents);
+  assert.deepEqual(result.task.source.comparisonGroups, source.comparisonGroups);
+  assert.deepEqual(await db('la_decisions').where({ id: f.decision.id }).first(), decision);
+});
+
+test('legacy users cannot inspect unrelated source contracts or retry their learning tasks', async () => {
+  const f = await fixture(), password = 'legacy-skill-access-123', id = randomUUID();
+  await db('la_users').insert({ id, username: 'unrelated-legal', display_name: '其他法务', department: '其他部门', roles: '["legal"]', password_hash: await hashPassword(password) });
+  const other = supertest.agent(handle.app), initial = await other.get('/api/auth/session');
+  const token = (await other.post('/api/auth/login').set('X-CSRF-Token', initial.body.csrf).send({ username: 'unrelated-legal', password }).expect(200)).body.csrf;
+  assert.deepEqual((await other.get('/api/learning-tasks').expect(200)).body, []);
+  await other.get('/api/learning-tasks?contractId=' + f.contractId).expect(404);
+  await other.get(`/api/learning-tasks/${f.task.id}/changes`).expect(404);
+  await other.post(`/api/learning-tasks/${f.task.id}/retry`).set('X-CSRF-Token', token).send({ revision: f.task.revision }).expect(404);
+  await other.put('/api/learning-settings').set('X-CSRF-Token', token).send({ enabled: false, updatedAt: null }).expect(403);
+});

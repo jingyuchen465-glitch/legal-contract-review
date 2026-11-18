@@ -1,0 +1,48 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { createGateway } = require('../pilot/model');
+const { config } = require('../pilot/config');
+
+test('long checklists and the screenshot-style advice are rejected as non-actionable', () => {
+  const { validateChecks } = require('../pilot/model');
+  for (const suggestion of ['审阅转租协议剩余片段，明确非我方原因导致主租约终止、封闭停用时的减租、退款、搬迁及赔偿安排；协商我方责任上限。', '补齐运营费包含范围、月度预付款、结算方式及附件；填写收款账户、IBAN、BIC等信息。']) {
+    assert.throws(() => validateChecks({ checks: [{ ruleId: 'r', status: 'fail', kind: 'clause', severity: 'high', reason: '缺少具体约定', suggestion, evidence: [{ blockId: 'b1', quote: '甲方付款。' }], legalRefIds: [] }] }, [{ id: 'r' }], { blocks: [{ id: 'b1', text: '甲方付款。' }] }, []), { code: 'VAGUE_SUGGESTION' });
+  }
+});
+
+test('review retries empty reminders and returns concrete replacement text without repeated anchors', async () => {
+  const saved = { ...config.model }, requests = [];
+  Object.assign(config.model, { baseUrl: 'http://localhost:9999/v1', name: 'quality-fixture', key: 'test-only' });
+  const document = { blocks: [{ id: 'b1', text: '甲方应在交付后付款。' }] };
+  const replacement = '建议将本条替换为：“甲方应在验收合格且收到合法有效发票后【待双方确认】日内支付款项。”';
+  try {
+    const gateway = createGateway(null, { fetchImpl: async (_, request) => {
+      const input = JSON.parse(JSON.parse(request.body).messages[1].content); requests.push(input);
+      const evidence = { blockId: 'b1', quote: '甲方应在交付后付款。' };
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ checks: [{
+        ruleId: 'payment', status: 'fail', kind: 'clause', severity: 'high', reason: '付款起算条件不明确',
+        suggestion: requests.length === 1 ? '请审阅并关注本条款。' : replacement,
+        evidence: [evidence, evidence], legalRefIds: [],
+      }] }) } }] });
+    } });
+    const result = await gateway.review(document, [{ id: 'payment', title: '付款条件' }], [], {});
+    assert.equal(result.checks[0].suggestion, replacement);
+    assert.equal(requests[1].validationFeedback.code, 'VAGUE_SUGGESTION');
+    assert.deepEqual(result.checks[0].evidence, [{ blockId: 'b1', quote: '甲方应在交付后付款。' }]);
+  } finally { Object.assign(config.model, saved); }
+});
+
+test('different problems found by the same rule in separate chunks retain their own replacement text and location', async () => {
+  const saved = { ...config.model };
+  Object.assign(config.model, { baseUrl: 'http://localhost:9999/v1', name: 'quality-fixture', key: 'test-only' });
+  try {
+    const gateway = createGateway(null, { reviewExecution: require('../pilot/review-planning').LEGACY_EXECUTION, fetchImpl: async (_, request) => {
+      const input = JSON.parse(JSON.parse(request.body).messages[1].content), first = input.chunkIndex === 1;
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ checks: [{ ruleId: 'payment', status: 'fail', kind: 'clause', severity: 'high', reason: first ? '付款条件未约定验收' : '退款期限不明确', suggestion: first ? '替换为：“验收合格后付款。”' : '替换为：“解除后【待双方确认】日内退款。”', evidence: [{ blockId: first ? 'b1' : 'b2', quote: first ? '甲方付款' : '乙方退款' }], legalRefIds: [] }] }) } }] });
+    } });
+    const result = await gateway.review({ blocks: [{ id: 'b1', text: '甲方付款' + '。'.repeat(15996) }, { id: 'b2', text: '乙方退款' }] }, [{ id: 'payment', title: '结算' }], [], {});
+    assert.match(result.checks[0].suggestion, /验收合格后付款/);
+    assert.match(result.checks[0].suggestion, /解除后【待双方确认】日内退款/);
+    assert.match(result.checks[0].suggestion, /b1/); assert.match(result.checks[0].suggestion, /b2/);
+  } finally { Object.assign(config.model, saved); }
+});

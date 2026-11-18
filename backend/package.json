@@ -18,6 +18,7 @@
     "axios": "^1.7.2",
     "connect-pg-simple": "^10.0.0",
     "cors": "^2.8.5",
+    "diff": "8.0.2",
     "dingtalk-stream": "2.1.6-beta.1",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

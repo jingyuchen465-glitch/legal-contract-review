@@ -1,0 +1,35 @@
+// Deterministic transport fixture; this measures scheduling, not provider speed.
+const assert = require('node:assert/strict');
+const { performance } = require('node:perf_hooks');
+const { setTimeout: delay } = require('node:timers/promises');
+const { config } = require('../backend/pilot/config');
+const { createGateway } = require('../backend/pilot/model');
+const { LEGACY_EXECUTION, executionSettings } = require('../backend/pilot/review-planning');
+
+async function main() {
+  const saved = { ...config.model };
+  Object.assign(config.model, { baseUrl: 'http://localhost:9999/v1', name: 'benchmark-fixture', key: 'fixture-only', reviewConcurrency: 3 });
+  const document = { blocks: Array.from({ length: 3 }, (_, i) => ({ id: `b${i + 1}`, text: 'A'.repeat(i === 2 ? 14020 : 16000) })) };
+  const rules = Array.from({ length: 51 }, (_, i) => ({ id: `r${i + 1}`, title: `规则${i + 1}` }));
+  const runs = [];
+  try {
+    let expected;
+    for (const scenario of [{ name: 'legacy-serial', concurrency: 1, execution: LEGACY_EXECUTION, calls: 33 }, { name: 'legacy-parallel', concurrency: 3, execution: LEGACY_EXECUTION, calls: 33 }, { name: 'whole-contract-parallel', concurrency: 3, execution: executionSettings(), calls: 7 }]) {
+      let calls = 0, active = 0, peak = 0, totalInputBytes = 0;
+      const gateway = createGateway(null, { reviewConcurrency: scenario.concurrency, reviewExecution: scenario.execution, fetchImpl: async (_, request) => {
+        const input = JSON.parse(JSON.parse(request.body).messages[1].content); calls++; peak = Math.max(peak, ++active);
+        totalInputBytes += Buffer.byteLength(request.body);
+        await delay(50); active--;
+        return Response.json({ choices: [{ message: { content: JSON.stringify({ checks: input.rules.map(r => ({ ruleId: r.id, status: 'pass', kind: 'clause', severity: 'low', reason: '原文可核实', suggestion: '', evidence: input.blocks.map(b => ({ blockId: b.id, quote: 'A' })), legalRefIds: [] })) }) } }] });
+      } });
+      const started = performance.now();
+      const result = await gateway.review(document, rules, [], {});
+      const elapsedMs = Math.round(performance.now() - started);
+      assert.equal(calls, scenario.calls); assert.equal(result.checks.length, 51); assert.ok(result.coverage.complete);
+      if (expected) { assert.deepEqual(result.checks, expected.checks); assert.deepEqual(result.coverage.coveredBlockIds, expected.coverage.coveredBlockIds); } else expected = result;
+      runs.push({ name: scenario.name, concurrency: scenario.concurrency, calls, peak, elapsedMs, totalInputBytes, checkedRules: result.checks.length, complete: result.coverage.complete });
+    }
+    console.log(JSON.stringify({ transport: 'synthetic, 50ms per call; does not measure real provider latency or legal quality', runs, speedup: Number((runs[0].elapsedMs / runs[2].elapsedMs).toFixed(2)), identicalChecks: true }, null, 2));
+  } finally { Object.assign(config.model, saved); }
+}
+main().catch(error => { console.error(error); process.exitCode = 1; });

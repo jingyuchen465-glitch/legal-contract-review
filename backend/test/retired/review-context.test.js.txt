@@ -1,0 +1,108 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { config } = require('../pilot/config');
+const { createGateway } = require('../pilot/model');
+
+async function fixture(fn) {
+  const saved = { ...config.model };
+  Object.assign(config.model, { baseUrl: 'http://localhost:9999/v1', name: 'context-fixture', key: 'fixture-only', reviewRuleBatchSize: 8, reviewInputBudgetBytes: 128000 });
+  try { await fn(); } finally { Object.assign(config.model, saved); }
+}
+function responder(requests) {
+  return async (_, request) => {
+    const body = JSON.parse(request.body), input = JSON.parse(body.messages[1].content);
+    requests.push({ body, input, bytes: Buffer.byteLength(request.body) });
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ checks: input.rules.map(rule => ({ ruleId: rule.id, status: 'pass', kind: 'clause', severity: 'low', reason: '原文明确', suggestion: '', evidence: [{ blockId: input.blocks[0].id, quote: input.blocks[0].text.slice(0, 8) }], legalRefIds: [] })) }) } }] });
+  };
+}
+const rules = Array.from({ length: 51 }, (_, i) => ({ id: `r${i}`, title: `规则${i}` }));
+
+test('a 46,020-character contract is read whole in seven batches with all 51 checks', async () => fixture(async () => {
+  const blocks = Array.from({ length: 310 }, (_, i) => ({ id: `b${i}`, text: 'Contract '.repeat(i < 140 ? 17 : 16), style: { font: 'irrelevant'.repeat(200) } }));
+  const document = { blocks: [{ ...blocks[0], text: blocks[0].text + 'x'.repeat(46020 - blocks.reduce((n, b) => n + b.text.length, 0)) }, ...blocks.slice(1)] };
+  const requests = [];
+  const result = await createGateway(null, { fetchImpl: responder(requests) }).review(document, rules, [], {});
+  assert.equal(requests.length, 7);
+  assert.ok(requests.every(r => r.input.blocks.length === 310 && r.input.chunkCount === 1));
+  assert.ok(requests.every(r => r.input.blocks.every(b => !('style' in b))));
+  assert.ok(requests.every(r => r.bytes <= config.model.reviewInputBudgetBytes));
+  assert.equal(result.coverage.complete, true);
+  assert.equal(result.checks.length, 51);
+  assert.deepEqual(result.coverage.coveredBlockIds, document.blocks.map(b => b.id));
+}));
+
+test('request budgeting includes rules, background, knowledge and preserves every long Unicode block', async () => fixture(async () => {
+  config.model.reviewInputBudgetBytes = 24000;
+  const document = { blocks: [{ id: 'b1', text: '合同😀'.repeat(1800), source: 'ocr', confidence: 0.7 }, { id: 'b2', text: 'Payment '.repeat(1500), row: 2, cell: 1, table: 1, kind: 'table_cell' }] };
+  const requests = [];
+  const result = await createGateway(null, { fetchImpl: responder(requests) }).review(document, rules.slice(0, 1), [{ id: 'k', content: '资料'.repeat(150) }], { purpose: '业务背景'.repeat(100) });
+  assert.ok(requests.length > 1);
+  assert.ok(requests.every(r => r.bytes <= config.model.reviewInputBudgetBytes));
+  const parts = requests.toSorted((a, b) => a.input.chunkIndex - b.input.chunkIndex).flatMap(r => r.input.blocks);
+  for (const block of document.blocks) assert.equal(parts.filter(b => b.id === block.id).map(b => b.text).join(''), block.text);
+  assert.ok(parts.filter(b => b.id === 'b2').every(b => b.row === 2 && b.cell === 1 && b.table === 1));
+  assert.ok(parts.filter(b => b.id === 'b1').every(b => b.source === 'ocr' && b.confidence === 0.7));
+  assert.equal(result.coverage.complete, true);
+}));
+
+test('pass output is explicitly compact while risk and uncertain output retain full review requirements', async () => fixture(async () => {
+  const requests = [];
+  await createGateway(null, { fetchImpl: responder(requests) }).review({ blocks: [{ id: 'b1', text: '验收后付款。' }] }, rules.slice(0, 1), [], {});
+  assert.match(requests[0].body.messages[0].content, /status=pass/);
+  assert.match(requests[0].body.messages[0].content, /suggestion.*空字符串/);
+  assert.match(requests[0].body.messages[0].content, /完整合同/);
+  assert.match(requests[0].body.messages[0].content, /完整合同文字/);
+}));
+
+test('oversized supporting material is rejected before sending requests rather than silently truncated', async () => fixture(async () => {
+  let calls = 0;
+  const gateway = createGateway(null, { fetchImpl: async () => { calls++; throw Error('must not send'); } });
+  await assert.rejects(gateway.review({ blocks: [{ id: 'b1', text: '正文' }] }, rules.slice(0, 1), [], { purpose: 'x'.repeat(130000) }), { code: 'REVIEW_CONTEXT_BUDGET' });
+  assert.equal(calls, 0);
+}));
+
+test('new budget-based fragments preserve failing findings over passes and validate correction feedback within budget', async () => fixture(async () => {
+  config.model.reviewInputBudgetBytes = 40000;
+  const document = { blocks: [{ id: 'b1', text: 'A'.repeat(23000) }, { id: 'b2', text: 'B'.repeat(23000) }] };
+  const requests = [];
+  const result = await createGateway(null, { fetchImpl: async (_, request) => {
+    assert.ok(Buffer.byteLength(request.body) <= 40000);
+    const input = JSON.parse(JSON.parse(request.body).messages[1].content); requests.push(input);
+    const block = input.blocks[0], failing = block.id === 'b2';
+    const check = { ruleId: 'r0', status: failing ? 'fail' : 'pass', kind: 'clause', severity: failing ? 'high' : 'low', reason: failing ? '具体风险' : '符合', suggestion: failing ? '替换为：甲方应在验收合格后付款。' : '', evidence: [{ blockId: block.id, quote: block.text.slice(0, 8) }], legalRefIds: [] };
+    if (failing && !input.validationFeedback) check.evidence[0].quote = 'invented';
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ checks: [check] }) } }] });
+  } }).review(document, rules.slice(0, 1), [], {});
+  assert.equal(result.coverage.chunks, 2);
+  assert.equal(result.checks[0].status, 'fail');
+  assert.equal(result.checks[0].evidence[0].blockId, 'b2');
+  assert.equal(requests.filter(r => r.validationFeedback).length, 1);
+}));
+
+test('historic execution keeps cache keys stable when new defaults change', async () => fixture(async () => {
+  const { LEGACY_EXECUTION } = require('../pilot/review-planning');
+  const document = { blocks: [{ id: 'b1', text: '验收后付款。' }] }, requests = [], cache = new Map();
+  const store = { load: async key => cache.get(key), save: async (key, checks) => cache.set(key, checks) };
+  const gateway = () => createGateway(null, { reviewExecution: LEGACY_EXECUTION, fetchImpl: responder(requests) });
+  await gateway().review(document, rules.slice(0, 6), [], {}, null, store);
+  assert.equal(requests.length, 2);
+  config.model.reviewRuleBatchSize = 10; config.model.reviewInputBudgetBytes = 24000;
+  requests.length = 0;
+  const result = await gateway().review(document, rules.slice(0, 6), [], {}, null, store);
+  assert.equal(requests.length, 0);
+  assert.equal(result.coverage.ruleBatches, 2);
+  assert.equal(result.coverage.promptVersion, LEGACY_EXECUTION.promptVersion);
+}));
+
+test('a pinned new execution reuses all checkpoints after budget and batch defaults change', async () => fixture(async () => {
+  const policy = require('../pilot/review-planning').executionSettings(), requests = [], cache = new Map();
+  const document = { blocks: [{ id: 'b1', text: '合同正文'.repeat(5000) }] };
+  const store = { load: async key => cache.get(key), save: async (key, checks) => cache.set(key, checks) };
+  const gateway = () => createGateway(null, { reviewExecution: policy, fetchImpl: responder(requests) });
+  await gateway().review(document, rules.slice(0, 9), [], {}, null, store);
+  assert.equal(requests.length, 2);
+  config.model.reviewInputBudgetBytes = 24000; config.model.reviewRuleBatchSize = 1;
+  requests.length = 0;
+  assert.equal((await gateway().review(document, rules.slice(0, 9), [], {}, null, store)).coverage.complete, true);
+  assert.equal(requests.length, 0);
+}));

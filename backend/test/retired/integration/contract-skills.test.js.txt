@@ -1,0 +1,206 @@
+const {test,before,after}=require('node:test');
+const assert=require('node:assert/strict');
+const {randomUUID,createHash}=require('node:crypto');
+const fs=require('node:fs/promises');
+const path=require('node:path');
+const supertest=require('supertest');
+const {config}=require('../../pilot/config');
+const {createDb}=require('../../pilot/db');
+const {migrate}=require('../../pilot/cli');
+const {createApp}=require('../../pilot/app');
+const {hashPassword}=require('../../pilot/auth');
+const {processLearning,makeSnapshot}=require('../../pilot/learning');
+const {publishedSkills,matchSkills,createSkillDraft}=require('../../pilot/skills');
+const {createGateway}=require('../../pilot/model');
+const {enqueueReview,processReview}=require('../../pilot/workflow');
+const {processEvaluation}=require('../../pilot/evaluation');
+const {readFiles,loadSkillInput}=require('../../pilot/skill-files');
+let root,db,database,handle,agent,csrf,user,server;
+const topics=new Map();
+const saved={url:config.databaseUrl,dataRoot:config.dataRoot,flag:config.learningCatalog.enabled,model:{...config.model}};
+const text='验收合格后按约付款，附件列明交付与费用范围。';
+const document={parserVersion:'fixture',blocks:[{id:'b1',text}]};
+const background={ourEntity:'我方',perspective:'采购方',purpose:'采购设备'};
+const call=(method,url,body)=>agent[method]('/api'+url).set('X-CSRF-Token',csrf).send(body);
+async function publish(p){await call('post',`/skill-pack-versions/${p.id}/submit`,{revision:p.revision}).expect(200);const response=await call('post',`/skill-pack-versions/${p.id}/publish`,{revision:p.revision+1});assert.equal(response.status,200,JSON.stringify(response.body));return db('la_skill_versions').where({id:p.id}).first();}
+async function fixture({contractId=randomUUID(),points=10,typeId='procurement',proposals:input}={}){
+ const versionId=randomUUID(),reviewId=randomUUID(),decisionId=randomUUID(),taskId=randomUUID();
+ if(!topics.has(contractId))topics.set(contractId,topics.size+1);const topic=topics.get(contractId);
+ let c=await db('la_contracts').where({id:contractId}).first();
+ if(!c){await db('la_contracts').insert({id:contractId,number:'COMPOSITE-'+contractId,title:'虚构综合技能验收合同',department:'甲',submitter_id:user.id,background:JSON.stringify(background)});c=await db('la_contracts').where({id:contractId}).first();}
+ const last=await db('la_versions').where({contract_id:contractId}).max('version_no as n').first();
+ const zip=new(require('adm-zip'))();zip.addFile('word/document.xml',Buffer.from('<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>'+text+'</w:t></w:r></w:p></w:body></w:document>'));const buffer=zip.toBuffer(),storage=require('../../pilot/storage');const storageKey=await storage.put(buffer,contractId,versionId,'虚构采购.docx');
+ await db('la_versions').insert({id:versionId,contract_id:contractId,version_no:Number(last.n||0)+1,kind:'contract',filename:'虚构采购.docx',sha256:storage.sha256(buffer),storage_key:storageKey,media_type:'application/docx',size:buffer.length,source_action:'fixture',parsed:JSON.stringify(document)});
+ const classification={typeId,tags:[],confirmed:true,versionId};
+ await db('la_reviews').insert({id:reviewId,contract_id:contractId,version_id:versionId,status:'completed',snapshot:JSON.stringify({background,classification}),coverage:JSON.stringify({complete:true})});
+ await db('la_decisions').insert({id:decisionId,review_id:reviewId,version_id:versionId,outcome:'agree',decided_by:user.id,reason:'结合确认稿审查'});
+ await db('la_contracts').where({id:contractId}).update({current_review_id:reviewId,current_version_id:versionId,classification:JSON.stringify(classification)});
+ const snapshot=await makeSnapshot(db,{snapshot:{background}},classification);snapshot.model={baseUrl:'http://localhost:9999/v1',name:'fixture'};
+ const source={documents:[{id:versionId,versionNo:Number(last.n||0)+1,filename:'虚构采购.docx',blocks:document.blocks,warnings:[]}],findings:[],restrictedTerms:[],decision:{id:decisionId,outcome:'agree'},comparison:'no_previous_version',contract:{id:contractId}};
+ await db('la_learning_tasks').insert({id:taskId,decision_id:decisionId,contract_id:contractId,review_id:reviewId,version_id:versionId,created_by:user.id,snapshot:JSON.stringify(snapshot),source:JSON.stringify(source)});
+ const proposals=input||Array.from({length:points},(_,i)=>({key:'s'+i,kind:'skill',scope:'type',title:(i===0?'付款':'交付')+'核对'+i,reason:'根据已确认的人工处理核对',method:'核对正文与附件的对应事项'+i+'，适用业务场景【场景'+topic+'】。',conditions:['适用事项'+i],exclusions:['不适用事项'+i],examples:[],evidence:[{versionId,blockId:'b1',quote:text}],findingIds:[],dependsOn:[]}));
+ for(const p of proposals)if(!p.evidence?.length)p.evidence=[{versionId,blockId:'b1',quote:text}];
+ await processLearning(db,taskId,{gateway:{distill:async()=>proposals}});
+ const task=await db('la_learning_tasks').where({id:taskId}).first();assert.notEqual(task.status,'failed',task.error_message);
+ return {contractId,versionId,reviewId,task};
+}
+const adopt=async f=>{const response=await call('post',`/contracts/${f.contractId}/skill-draft`,{tasks:[{id:f.task.id,revision:f.task.revision}]});assert.equal(response.status,201,JSON.stringify(response.body));return response.body;};
+before(async()=>{
+ root=createDb();database='legal_test_contractskills_'+randomUUID().replaceAll('-','');await root.raw(`CREATE DATABASE "${database}"`);
+ const url=new URL(config.databaseUrl);url.pathname='/'+database;config.databaseUrl=url.href;config.dataRoot=path.resolve('.local/test-data',database);config.learningCatalog.enabled=true;db=createDb();await migrate(db);
+ user={id:randomUUID(),username:'composite-admin',display_name:'验收法务',roles:['admin'],department:'甲'};await db('la_users').insert({...user,roles:JSON.stringify(user.roles),password_hash:await hashPassword('composite-test-password')});
+ await db('la_settings').insert({key:'contract_learning',value:JSON.stringify({enabled:true})});
+ handle=createApp(db);agent=supertest.agent(handle.app);const session=await agent.get('/api/auth/session');csrf=(await agent.post('/api/auth/login').set('X-CSRF-Token',session.body.csrf).send({username:user.username,password:'composite-test-password'}).expect(200)).body.csrf;
+});
+after(async()=>{if(server)await new Promise(r=>server.close(r));await handle?.close();await db?.destroy();if(root&&database){await root.raw('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ? AND pid <> pg_backend_pid()',[database]);await root.raw(`DROP DATABASE "${database}"`);}await root?.destroy();config.databaseUrl=saved.url;config.dataRoot=saved.dataRoot;config.learningCatalog.enabled=saved.flag;Object.assign(config.model,saved.model);});
+
+test('empty experience library still loads only common and matching category entry files',async()=>{
+ const packs=await publishedSkills(db),selected=matchSkills({typeId:'procurement',tags:[]},packs);
+ assert.equal(selected.length,2);assert.equal(selected.every(p=>p.entryOnly&&!p.skills.length),true);
+ assert.deepEqual(new Set(selected.map(p=>p.fileBundle.entryKey)),new Set(['common','production']));
+ const groups=require('../../pilot/knowledge-catalog').skillBatches(selected);assert.equal(groups.length,1);assert.equal(groups[0].length,2);
+ const inputs=await loadSkillInput(groups[0]);assert.equal(inputs.every(p=>p.entrypoint.includes('审查流程')&&p.reference===''),true);
+ assert.deepEqual((await call('get','/skill-packs').expect(200)).body,[]);
+ const plan=(await call('get','/review-plan?typeId=procurement').expect(200)).body;assert.equal(plan.skillPacks.length,0);assert.equal(plan.skillEntries.length,2);
+});
+
+test('ten source methods produce one contract skill, remain individually evidenced, and retry is idempotent',async()=>{
+ const f=await fixture(),draft=await adopt(f);assert.equal(draft.skills.length,10);assert.equal(draft.origin_contract_id,f.contractId);
+ const again=await adopt(f);assert.equal(again.id,draft.id);assert.equal((await db('la_skill_versions').where({origin_contract_id:f.contractId})).length,1);
+ assert.equal((await publishedSkills(db)).some(p=>p.id===draft.id),false);
+ const result=(await call('get',`/learning-proposals?kind=skill&groupBy=contract&contractId=${f.contractId}`).expect(200)).body;assert.equal(result.total,1);assert.equal(result.items[0].tasks[0].proposals.length,10);
+ const listed=(await call('get','/skill-packs').expect(200)).body.find(p=>p.id===draft.id);assert.equal(listed.skills[0].evidence,undefined);
+ const published=await publish(draft);const files=await readFiles(published.file_bundle);assert.match(files['SKILL.md'],/^---\nname: contract-review-production\ndescription:/);assert.equal(Object.keys(files).length,2);
+ const task=await db('la_learning_tasks').where({id:f.task.id}).first();assert.equal(task.proposals.every(p=>p.draftVersionId===draft.id),true);assert.deepEqual(published.skills[0].evidence[0],task.proposals[0].evidence[0]);
+ const matched=matchSkills({typeId:'procurement',tags:[]},await publishedSkills(db));assert.equal(matched.find(p=>p.id===draft.id).skills.length,10);assert.equal(matchSkills({typeId:'mold'},await publishedSkills(db)).some(p=>p.id===draft.id),false);
+ const zip=await call('get',`/skill-pack-versions/${draft.id}/bundle`).expect(200);assert.match(zip.headers['content-type'],/zip/);
+});
+
+test('later confirmation updates the same identity and retains old methods; newer draft cannot overwrite a changed baseline',async()=>{
+ const f=await fixture({points:2}),first=await publish(await adopt(f));
+ const next=await fixture({contractId:f.contractId,points:3}),stale=await fixture({contractId:f.contractId,points:4});
+ const newer=await adopt(next);assert.equal(newer.pack_id,first.pack_id);assert.equal(newer.base_version_id,first.id);assert.equal(newer.skills.length,3);assert.equal(newer.skills[0].id,first.skills[0].id);await publish(newer);
+ const response=await call('post',`/contracts/${f.contractId}/skill-draft`,{tasks:[{id:stale.task.id,revision:stale.task.revision}]}).expect(409);assert.equal(response.body.code,'SKILL_BASE_CHANGED');
+ assert.equal((await db('la_skill_versions').where({origin_contract_id:f.contractId,state:'published'})).length,1);
+ const none=await fixture({points:0});assert.equal(none.task.status,'no_change');await call('post',`/contracts/${none.contractId}/skill-draft`,{tasks:[{id:none.task.id,revision:none.task.revision}]}).expect(409);
+});
+
+test('exclusion requires a reason, keeps original evidence, and rule dependencies block adoption until published',async()=>{
+ const f=await fixture({points:3});const excluded={taskId:f.task.id,proposalId:f.task.proposals[0].id,reason:'不适用于后续同类合同'};
+ const draft=(await call('post',`/contracts/${f.contractId}/skill-draft`,{tasks:[{id:f.task.id,revision:f.task.revision}],excluded:[excluded]}).expect(201)).body;assert.equal(draft.skills.length,2);
+ const task=await db('la_learning_tasks').where({id:f.task.id}).first();assert.equal(task.proposals[0].exclusionReason,excluded.reason);assert.equal(task.proposals[0].evidence.length,1);
+ await call('put',`/skill-pack-versions/${draft.id}`,{...draft,skills:[draft.skills[0]],removedItemIds:[draft.skills[1].id]}).expect(400);
+ const edited=(await call('put',`/skill-pack-versions/${draft.id}`,{...draft,skills:[draft.skills[0]],removedItemIds:[draft.skills[1].id],removalReason:'排除个案条件'}).expect(200)).body;assert.equal(edited.skills.length,1);
+ const record=await db('la_audit').where({entity_id:draft.id,action:'skill.remove_items'}).first();assert.equal(record.details.reason,'排除个案条件');
+ const p={key:'r',kind:'rule',scope:'type',title:'验收规则',reason:'须核对验收',instruction:'检查验收依据',method:'',conditions:[],exclusions:[],examples:[],dependsOn:[]};
+ const dep=await fixture({proposals:[p,{...p,key:'s',kind:'skill',title:'验收方法',method:'核对验收依据与付款起算点',instruction:'',dependsOn:['r']}]});
+ const response=await call('post',`/contracts/${dep.contractId}/skill-draft`,{tasks:[{id:dep.task.id,revision:dep.task.revision}]}).expect(409);assert.equal(response.body.code,'SKILL_RULE_REQUIRED');
+ assert.equal((await db('la_skill_versions').where({origin_contract_id:dep.contractId})).length,0);
+});
+
+test('failed file generation leaves the published version active and detects tampering without falling back to JSON',async()=>{
+ const f=await fixture({points:1}),first=await publish(await adopt(f)),next=await fixture({contractId:f.contractId,points:2}),draft=await adopt(next);
+ await call('post',`/skill-pack-versions/${draft.id}/submit`,{revision:draft.revision}).expect(200);
+ const directory=path.join(config.dataRoot,'skills'),hold=directory+'-hold';await fs.rename(directory,hold);await fs.writeFile(directory,'blocked');
+ try{await call('post',`/skill-pack-versions/${draft.id}/publish`,{revision:draft.revision+1}).expect(500);assert.equal((await db('la_skill_versions').where({id:first.id}).first()).state,'published');}finally{await fs.unlink(directory);await fs.rename(hold,directory);}
+ const bundle=first.file_bundle,reference=bundle.files.find(f=>f.path!=='SKILL.md'),file=path.join(directory,bundle.hash,reference.path),original=await fs.readFile(file);
+ await fs.writeFile(file,'tampered');try{await assert.rejects(loadSkillInput(matchSkills({typeId:'procurement'},[first])),{code:'SKILL_FILE_CHANGED'});}finally{await fs.writeFile(file,original);}
+});
+
+test('historical generator-v1 manifests remain readable without regenerating pinned contents',async()=>{
+ const f=await fixture({points:1}),pack=await publish(await adopt(f)),contents=await readFiles(pack.file_bundle);
+ const canonical=value=>JSON.stringify(value,(_,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v);
+ const digest=value=>createHash('sha256').update(value).digest('hex');
+ const payload={compilerVersion:'contract-skill-files-1',contents,sections:pack.file_bundle.sections,entryVersionId:pack.file_bundle.entryVersionId};
+ const bundle={...pack.file_bundle,compilerVersion:payload.compilerVersion,hash:digest(canonical(payload))};delete bundle.commonEntryVersionId;
+ for(const [name,body]of Object.entries(contents)){const file=path.join(config.dataRoot,'skills',bundle.hash,name);await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,body);}
+ const input=await loadSkillInput(matchSkills({typeId:'procurement'},[{...pack,file_bundle:bundle}]));
+ assert.equal(input[0].bundleHash,bundle.hash);assert.equal(input[0].entrypoint,contents['SKILL.md']);assert.equal((await readFiles(bundle))['SKILL.md'],contents['SKILL.md']);
+});
+
+test('real gateway reads file contents and batch hashes; queued reviews and evaluations preserve pinned versions',async()=>{
+ const f=await fixture({points:25}),first=await publish(await adopt(f)),c=await db('la_contracts').where({id:f.contractId}).first();
+ const queued=await db.transaction(trx=>enqueueReview(trx,c,user.id));
+ const oldSnapshot=(await db('la_reviews').where({id:queued}).first()).snapshot;
+ const next=await fixture({contractId:f.contractId,points:26}),newer=await publish(await adopt(next));
+ let seen;await processReview(db,queued,{gateway:{classify:async()=>({typeId:'procurement',tags:[]}),review:async(...args)=>{seen=args[6];return{checks:[],coverage:{complete:true}};}}});
+ assert.equal(oldSnapshot.publishedSkillPacks.find(p=>p.origin_contract_id===f.contractId).id,first.id);assert.equal(seen.find(p=>p.originContractId===f.contractId).id,first.id);
+ Object.assign(config.model,{baseUrl:'http://localhost:9999/v1',name:'composite-fixture',key:'test'});const requests=[];
+ const gateway=createGateway(null,{fetchImpl:async(url,options)=>{const input=JSON.parse(JSON.parse(options.body).messages[1].content);requests.push(input);return Response.json({choices:[{message:{content:JSON.stringify({checks:input.rules.map(r=>({ruleId:r.id,status:'pass',kind:'clause',severity:'low',reason:'原文明确',suggestion:'',evidence:[{blockId:'b1',quote:text}],legalRefIds:[]}))})}}]});}});
+ await gateway.review(document,[{id:'r',title:'付款检查'}],[],{},null,{},matchSkills({typeId:'procurement'},[first]));assert.equal(requests.length,2);assert.equal(requests.every(r=>r.skills[0].entrypoint.includes('审查流程')),true);assert.equal(requests.flatMap(r=>r.skills.map(s=>s.reference.match(/## (付款|交付)核对/g)||[])).flat().length,25);assert.equal(requests[0].skills[0].skills,undefined);
+ const evaluationId=randomUUID();await db('la_evaluation_cases').insert({id:randomUUID(),name:'综合技能评测',split:'development',document:JSON.stringify(document),expected:JSON.stringify({typeId:'procurement',tags:[],riskRuleIds:[],highRiskRuleIds:[],background})});
+ await db('la_evaluations').insert({id:evaluationId,created_by:user.id,config:JSON.stringify({split:'development',adapters:['llm'],includeReview:true,skillVersions:oldSnapshot.publishedSkillPacks})});
+ await processEvaluation(db,evaluationId,{gateway:{classify:async()=>({typeId:'procurement',tags:[]}),review:async(...args)=>{seen=args[6];return{checks:[],coverage:{complete:true}};}}});assert.equal(seen.find(p=>p.originContractId===f.contractId).id,first.id);assert.notEqual(first.file_bundle.hash,newer.file_bundle.hash);
+});
+
+test('editable category entry publishes a new immutable bundle only for subsequent tasks',async()=>{
+ const f=await fixture({points:1}),pack=await publish(await adopt(f));const before=(await publishedSkills(db)).find(p=>p.id===pack.id);
+ const entry=(await call('post','/skill-entries/production/versions',{name:'生产采购合同审查技能',description:'适用于生产采购的已发布方法',body:'## 审查流程\n\n先核对采购标的，再检查交付验收与付款的对应关系。',baseVersionId:null}).expect(201)).body;
+ await call('post',`/skill-entry-versions/${entry.id}/submit`,{revision:entry.revision}).expect(200);await call('post',`/skill-entry-versions/${entry.id}/publish`,{revision:entry.revision+1}).expect(200);
+ const after=(await publishedSkills(db)).find(p=>p.id===pack.id);assert.equal(before.file_bundle.entryVersionId,null);assert.equal(after.file_bundle.entryVersionId,entry.id);assert.notEqual(before.file_bundle.hash,after.file_bundle.hash);assert.match((await readFiles(before.file_bundle))['SKILL.md'],/核对交易实质/);assert.match((await readFiles(after.file_bundle))['SKILL.md'],/先核对采购标的/);
+});
+
+test('published common entry reaches type-specific model input without a common method, and excluded checks stay out',async()=>{
+ const f=await fixture({points:1}),pack=await publish(await adopt(f)),before=(await publishedSkills(db)).find(p=>p.id===pack.id);
+ const common=(await call('post','/skill-entries/common/versions',{name:'通用审查流程',description:'各类合同均先核对附件优先顺序',body:'先核对主合同与附件约定的优先适用顺序，再按所属大类审查。',baseVersionId:null}).expect(201)).body;
+ await call('post',`/skill-entry-versions/${common.id}/submit`,{revision:common.revision}).expect(200);
+ assert.equal((await publishedSkills(db)).find(p=>p.id===pack.id).file_bundle.hash,before.file_bundle.hash);
+ await call('post',`/skill-entry-versions/${common.id}/publish`,{revision:common.revision+1}).expect(400);
+ await call('post',`/skill-entry-versions/${common.id}/publish`,{revision:common.revision+1,commonConfirmed:true}).expect(200);
+ const after=(await publishedSkills(db)).find(p=>p.id===pack.id);
+ assert.equal(after.file_bundle.commonEntryVersionId,common.id);assert.notEqual(after.file_bundle.hash,before.file_bundle.hash);
+ assert.doesNotMatch((await readFiles(before.file_bundle))['SKILL.md'],/先核对主合同与附件约定/);
+ const only=structuredClone(after);only.skills[0].applicability={anyTags:['仓储服务'],excludeTags:[]};
+ const selected=matchSkills({typeId:'procurement',tags:[]},[only]);assert.equal(selected[0].skills.length,0);
+ const requests=[],gateway=createGateway(null,{fetchImpl:async(_,options)=>{
+   const input=JSON.parse(JSON.parse(options.body).messages[1].content);requests.push(input);
+   return Response.json({choices:[{message:{content:JSON.stringify({checks:[{ruleId:'r',status:'pass',kind:'clause',severity:'low',reason:'原文明确',suggestion:'',evidence:[{blockId:'b1',quote:text}],legalRefIds:[]}]})}}]});
+ }});
+ await gateway.review(document,[{id:'r',title:'付款检查'}],[],{},null,{},selected);
+ assert.equal(requests.length,1);assert.match(requests[0].skills[0].entrypoint,/先核对主合同与附件约定/);assert.match(requests[0].skills[0].entrypoint,/先核对采购标的/);assert.equal(requests[0].skills[0].reference,'');
+ const old=await loadSkillInput(matchSkills({typeId:'procurement'},[before]));assert.doesNotMatch(old[0].entrypoint,/先核对主合同与附件约定/);
+});
+
+test('consolidating historical methods suppresses only exclusive originals after publication and retains shared methods',async()=>{
+ const f=await fixture({points:2}),other=await fixture({points:1});
+ const skills=f.task.proposals.map((p,i)=>({id:'legacy-'+p.id,title:p.title,method:p.method,conditions:p.conditions,exclusions:p.exclusions,examples:p.examples,sourceIds:i?[f.task.id,other.task.id]:[f.task.id],requiredRules:[]}));
+ const legacy=await publish(await db.transaction(trx=>createSkillDraft(trx,{name:'历史采购方法',scope:{level:'type',typeIds:['procurement']},skills},user.id,{sources:[{id:f.task.id,contractId:f.contractId},{id:other.task.id,contractId:other.contractId}]})));
+ await db('la_learning_tasks').where({id:f.task.id}).update({status:'completed',proposals:JSON.stringify(f.task.proposals.map((p,i)=>({...p,state:'adopted',draftVersionId:legacy.id,adoptedItemId:skills[i].id})))});
+ f.task=await db('la_learning_tasks').where({id:f.task.id}).first();const draft=await adopt(f);assert.equal(draft.skills.length,2);
+ assert.equal((await publishedSkills(db)).find(p=>p.id===legacy.id).skills.length,2);await publish(draft);
+ const remaining=(await publishedSkills(db)).find(p=>p.id===legacy.id);assert.deepEqual(remaining.skills.map(s=>s.id),[skills[1].id]);assert.equal((await db('la_skill_versions').where({id:legacy.id}).first()).skills.length,2);
+ const task=await db('la_learning_tasks').where({id:f.task.id}).first();assert.equal(task.proposals[0].legacyDraftVersionId,legacy.id);
+});
+
+test('classification correction moves the complete composite while preserving its contract identity and immutable old files',async()=>{
+ const f=await fixture({points:2}),first=await publish(await adopt(f)),c=await db('la_contracts').where({id:f.contractId}).first();
+ const {enqueue,processReorganization}=require('../../pilot/learning-reorganizations');
+ const job=await db.transaction(trx=>enqueue(trx,user,c));await processReorganization(db,job.id,{gateway:{classify:async()=>({typeId:'warehouse',tags:['场地租赁'],uncertain:false,reason:'虚构分类验收',evidence:[{blockId:'b1',quote:text}]})}});
+ const ready=await db('la_learning_reorganizations').where({id:job.id}).first();assert.equal(ready.status,'ready',ready.error_message);
+ await call('post',`/learning-reorganizations/${job.id}/apply`,{revision:ready.revision,confirmed:true}).expect(200);
+ const current=await db('la_skill_versions').where({origin_contract_id:f.contractId,state:'published'}).first();assert.equal(current.pack_id,first.pack_id);assert.equal(current.scope.typeIds[0],'warehouse');assert.equal(current.skills.length,2);assert.equal(current.file_bundle.entryKey,'logistics');assert.match((await readFiles(first.file_bundle))['SKILL.md'],/production/);
+});
+
+test('backup and isolated restore retain skill files required by published versions and historical review snapshots',async t=>{
+ const bin=process.platform==='win32'?path.join(process.env.LOCALAPPDATA,'LegalAgentDev','runtime-18.4.0-beta.17','bin'):null;
+ const dumpPath=process.env.PG_DUMP_PATH||(bin?path.join(bin,'pg_dump.exe'):'pg_dump'),restorePath=process.env.PG_RESTORE_PATH||(bin?path.join(bin,'pg_restore.exe'):'pg_restore');
+ if(bin&&!await fs.stat(dumpPath).catch(()=>null)){t.skip('需要 PostgreSQL 备份工具');return;}
+ const {createBackup,restoreBackup}=require('../../pilot/backup');const backup=await createBackup(db,{dumpPath});
+ const restoreName='legal_restore_skills_'+randomUUID().replaceAll('-','');await root.raw(`CREATE DATABASE "${restoreName}"`);const url=new URL(config.databaseUrl);url.pathname='/'+restoreName;const restored=createDb(url.href),targetRoot=config.dataRoot+'-restored';
+ try{await restoreBackup(restored,{directory:backup.directory,databaseUrl:url.href,targetRoot,restorePath});
+   const row=await restored('la_skill_versions').where({state:'published'}).whereNotNull('file_bundle').first();assert.ok(row);
+   const sourceRoot=config.dataRoot;config.dataRoot=targetRoot;try{await readFiles(row.file_bundle);const review=await restored('la_reviews').whereRaw("jsonb_exists(snapshot, 'publishedSkillPacks')").first();assert.ok(review);for(const p of review.snapshot.publishedSkillPacks)if(p.file_bundle)await readFiles(p.file_bundle);}finally{config.dataRoot=sourceRoot;}
+ }finally{await restored.destroy();await root.raw(`DROP DATABASE "${restoreName}"`);}
+});
+
+test('browser shows one collapsed composite, edits and publishes it, and works at phone width',{skip:!process.env.CONTRACT_SKILL_BROWSER},async()=>{
+ const {chromium}=require('playwright'),f=await fixture();server=require('node:http').createServer(handle.app);await new Promise(r=>server.listen(0,'127.0.0.1',r));const base='http://127.0.0.1:'+server.address().port;config.publicUrl=base;
+ const browser=await chromium.launch({channel:'msedge',headless:true});
+ try{const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ const session=await(await page.request.get(base+'/api/auth/session')).json();await page.request.post(base+'/api/auth/login',{headers:{'X-CSRF-Token':session.csrf,Origin:base},data:{username:user.username,password:'composite-test-password'}});
+ await page.goto(base+'/#/feedback?learning='+f.task.id);const card=page.locator(`.proposal-center [data-contract-skill="${f.contractId}"]`);await card.waitFor();assert.equal(await card.count(),1);assert.equal(await card.getAttribute('open'),null);await page.screenshot({path:path.join(config.dataRoot,'composite-feedback-desktop.png'),fullPage:true});await card.locator(':scope > summary').click();assert.equal(await card.locator('.learning-proposal').count(),10);await card.getByRole('button',{name:'统一采纳为综合技能草稿',exact:true}).click();await card.getByRole('link',{name:'查看 / 编辑综合技能草稿 →',exact:true}).click();
+ await page.getByRole('dialog').waitFor();await page.getByRole('button',{name:'提交审核',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
+ await page.locator(`[data-contract-id="${f.contractId}"]`).getByRole('button',{name:'查看 / 编辑综合技能',exact:true}).click();await page.getByRole('button',{name:'确认并发布，后续新建预审生效',exact:true}).click();await page.getByRole('dialog').waitFor({state:'hidden'});
+ await page.screenshot({path:path.join(config.dataRoot,'composite-library-desktop.png'),fullPage:true});await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(config.dataRoot,'composite-phone.png'),fullPage:true});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);assert.deepEqual(errors,[]);
+ }finally{await browser.close();}
+});

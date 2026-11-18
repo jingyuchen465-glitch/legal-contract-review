@@ -1,0 +1,89 @@
+const { config } = require('./config');
+const { chunks } = require('./parser');
+const { fail } = require('./errors');
+
+const LEGACY_EXECUTION = Object.freeze({ version: 1, ruleBatchSize: 5, maxChars: 16000, promptVersion: 'review-1.6-concrete-clauses' });
+const PROMPT_VERSION = 'review-1.7-context-budget';
+const bounded = (value, fallback, min, max) => Number.isInteger(Number(value)) && Number(value) >= min && Number(value) <= max ? Number(value) : fallback;
+function executionSettings() {
+  return { version: 2, ruleBatchSize: bounded(config.model.reviewRuleBatchSize, 8, 1, 10), inputBudgetBytes: bounded(config.model.reviewInputBudgetBytes, 128000, 16384, 512000), promptVersion: PROMPT_VERSION };
+}
+function resolveExecution(raw) {
+  if (!raw) return executionSettings();
+  if (raw.version === 1 && raw.ruleBatchSize === 5 && raw.maxChars === 16000 && raw.promptVersion === LEGACY_EXECUTION.promptVersion) return { ...LEGACY_EXECUTION };
+  if (raw.version === 2 && raw.promptVersion === PROMPT_VERSION && Number.isInteger(raw.ruleBatchSize) && raw.ruleBatchSize >= 1 && raw.ruleBatchSize <= 10 && Number.isInteger(raw.inputBudgetBytes) && raw.inputBudgetBytes >= 16384 && raw.inputBudgetBytes <= 512000) return { ...raw };
+  fail(422, 'REVIEW_PLAN_INVALID', '本次预审固定的执行方案无效，请重新创建预审任务');
+}
+function chatBody(system, input, name) {
+  return { model: name, temperature: 0, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(input) }] };
+}
+const requestBytes = (system, input, name) => Buffer.byteLength(JSON.stringify(chatBody(system, input, name)));
+
+function compactBlocks(blocks) {
+  const fields = ['id', 'text', 'kind', 'paragraph', 'table', 'row', 'cell', 'page', 'source', 'confidence', 'sourceBlockId', 'versionId', 'filename', 'role'];
+  return blocks.filter(b => b.text.length).map(b => Object.fromEntries(fields.filter(k => b[k] !== undefined && b[k] !== null).map(k => [k, b[k]])));
+}
+function compactBackground(background) {
+  return { ...background, ...(background.supportingDocuments ? { supportingDocuments: background.supportingDocuments.map(d => ({ ...d, blocks: compactBlocks(d.blocks) })) } : {}) };
+}
+function efficientPrompt(system, whole) {
+  return system.replace('已有条款判断必须引用本片段的精确原文', '已有条款判断必须引用给定正文的精确原文')
+    .replace('当前仅是一个片段，不把本片段未发现当作全文缺失。', whole ? '本次 blocks 包含完整合同。须结合前后条款及交叉引用核对，只有核对完整合同后才能判断缺失。' : '当前仅是合同片段，不把本片段未发现当作全文缺失。')
+    .replace('必须起草实际条款', 'status=fail 时必须起草实际条款')
+    + ' 输出长度：status=pass 时 reason 只用一句简短结论，suggestion 必须为空字符串，保留足以核实结论的精确 evidence，不重复抄录长段正文。status=fail 或 uncertain 时保留具体风险或不确定原因及必要证据；fail 的 suggestion 仍须提供完整合同文字，不得用简略提醒替代。';
+}
+// Account for the block JSON being escaped inside messages[].content on the wire.
+const blockBytes = block => Buffer.byteLength(JSON.stringify(JSON.stringify(block))) - 2;
+function splitBlocks(blocks, budget) {
+  const parts = []; let current = [], size = 0;
+  const add = block => {
+    const bytes = blockBytes(block);
+    if (size + bytes + (current.length ? 1 : 0) > budget && current.length) { parts.push(current); current = []; size = 0; }
+    current.push(block); size += bytes + (current.length > 1 ? 1 : 0);
+  };
+  for (const block of blocks) {
+    if (blockBytes(block) <= budget) { add(block); continue; }
+    const characters = Array.from(block.text);
+    let offset = 0;
+    while (offset < characters.length) {
+      let low = 1, high = characters.length - offset, length = 0;
+      while (low <= high) {
+        const middle = Math.floor((low + high) / 2);
+        if (blockBytes({ ...block, text: characters.slice(offset, offset + middle).join('') }) <= budget) { length = middle; low = middle + 1; }
+        else high = middle - 1;
+      }
+      if (!length) fail(422, 'REVIEW_CONTEXT_BUDGET', '本次资料或段落定位信息超过模型输入预算，无法完整审查；请调整预算或关联材料后重新预审');
+      add({ ...block, text: characters.slice(offset, offset + length).join('') }); offset += length;
+    }
+  }
+  if (current.length) parts.push(current);
+  return parts;
+}
+function reviewInput(plan, i, b, sg) {
+  return { rules: plan.batches[b], knowledge: plan.knowledge, background: plan.background, skills: plan.skillInputs[sg], ...(plan.skillMode ? { skillBatchIndex: sg + 1, skillBatchCount: plan.skillInputs.length } : {}), chunkIndex: i + 1, chunkCount: plan.parts.length, ruleBatchIndex: b + 1, ruleBatchCount: plan.batches.length, blocks: plan.parts[i], ...(plan.execution.version === 2 ? { documentScope: plan.parts.length === 1 ? 'complete' : 'fragment' } : {}) };
+}
+function buildReviewPlan({ document, rules, knowledge, background, skillInputs, skillMode, system, modelName, execution }) {
+  execution = resolveExecution(execution);
+  const batches = []; for (let start = 0; start < rules.length; start += execution.ruleBatchSize) batches.push(rules.slice(start, start + execution.ruleBatchSize));
+  const plan = { execution, batches, knowledge, background, skillInputs, skillMode, parts: [], system };
+  if (execution.version === 1) { plan.parts = chunks(document); return plan; }
+  plan.background = compactBackground(background);
+  // Reserve room for bounded validation feedback and large chunk indices.
+  const feedbackReserve = 8192;
+  let overhead = 0;
+  for (let b = 0; b < batches.length; b++) for (let sg = 0; sg < skillInputs.length; sg++) {
+    const input = { ...reviewInput(plan, 0, b, sg), blocks: [], chunkIndex: 999999, chunkCount: 999999 };
+    overhead = Math.max(overhead, ...[false, true].map(whole => requestBytes(efficientPrompt(system, whole), input, modelName)));
+  }
+  const budget = execution.inputBudgetBytes - overhead - feedbackReserve;
+  if (budget < 256) fail(422, 'REVIEW_CONTEXT_BUDGET', '本次背景、规则或知识资料超过模型输入预算，无法完整审查；请调整预算或关联材料后重新预审');
+  plan.parts = splitBlocks(compactBlocks(document.blocks), budget);
+  if (!plan.parts.length) fail(422, 'EMPTY_TEXT', '合同正文为空');
+  plan.system = efficientPrompt(system, plan.parts.length === 1);
+  for (let i = 0; i < plan.parts.length; i++) for (let b = 0; b < batches.length; b++) for (let sg = 0; sg < skillInputs.length; sg++) {
+    if (requestBytes(plan.system, reviewInput(plan, i, b, sg), modelName) > execution.inputBudgetBytes) fail(422, 'REVIEW_CONTEXT_BUDGET', '完整审查请求超过模型输入预算，请调整预算或关联材料后重新预审');
+  }
+  return plan;
+}
+
+module.exports = { LEGACY_EXECUTION, PROMPT_VERSION, executionSettings, resolveExecution, chatBody, requestBytes, buildReviewPlan, reviewInput };

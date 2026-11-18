@@ -85,12 +85,12 @@ async function processIntegration(db, eventId, api) {
     const detail = await api.detail(id), assignees = currentAssignees(detail);
     const accounts = assignees.length ? await db('la_dingtalk_accounts').where({ client_id: connection.clientId }).whereIn('ding_user_id', assignees).whereIn('user_id', db('la_users').select('id').where({active:true})) : [];
     if (!accounts.length) { summary.reason = '当前办理人尚未绑定工作台账号，或审批已离开该办理人'; await save('ignored'); return; }
-    const allFiles = attachmentsOf(detail), files = allFiles.filter(f => /\.(pdf|docx)$/i.test(f.fileName));
+    const allFiles = attachmentsOf(detail), files = allFiles.filter(f => require('./file-formats').isSupported(f.fileName));
     summary.skipped = allFiles.length - files.length;
-    if (!files.length) { summary.reason = '审批表中没有 PDF 或 DOCX 附件'; await save('completed'); return; }
     // Same field/name identifies a revision. Ambiguous equal names stay separate by file ID.
     const counts = new Map(); for (const f of files) { const key = JSON.stringify([f.field, f.fileName]); counts.set(key, (counts.get(key) || 0) + 1); }
     for (const account of accounts) {
+      if (await require('./joint-intake').collect(db, { connection, account, instanceId: id, event, detail, files: allFiles, api, signature, summary })) continue;
       for (const file of files) {
         try {
           const buffer = await api.attachment(id, file), upload = { buffer, originalname: file.fileName }; storage.validateUpload(upload);
@@ -121,6 +121,7 @@ async function processIntegration(db, eventId, api) {
               result = await createContract(trx, actor, upload, {
                 title: file.fileName,
                 source: 'dingtalk',
+                guidedReview: true,
                 intakeMode,
                 intakeReviewStatus: intakeMode === 'reconciliation' ? 'pending' : 'confirmed',
                 reviewerId: hasRole(actor, 'legal') ? actor.id : null,

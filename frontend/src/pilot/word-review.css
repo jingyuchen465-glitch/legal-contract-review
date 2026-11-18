@@ -1,0 +1,131 @@
+body.margin-review-open{overflow:hidden}
+.margin-learning{flex-shrink:0;background:#f8fafc;border-bottom:1px solid #dce2e9;padding:8px 28px;font-size:12px;max-height:30vh;overflow:auto}.margin-learning summary{cursor:pointer;color:#385c93}.margin-learning p{margin:8px 0;color:#64748b;line-height:1.7}.margin-learning label{display:block;color:#475569;margin-bottom:4px}.margin-learning textarea{display:block;box-sizing:border-box;width:100%;max-width:1000px;padding:8px;border:1px solid #cbd5e1;border-radius:4px;font:13px/1.7 inherit;resize:vertical}.margin-learning-result{flex-shrink:0;display:flex;flex-wrap:wrap;gap:6px 18px;padding:7px 28px;background:#f0f7f3;color:#4f735c;font-size:12px}.margin-learning-result a{color:#2563eb}@media(max-width:650px){.margin-learning,.margin-learning-result{padding:8px 12px}}
+.margin-review{position:fixed;inset:0;z-index:1100;display:flex;flex-direction:column;min-width:360px;background:#e6e8ed;color:#262830;font:13px/1.5 'Microsoft YaHei','PingFang SC',sans-serif;--sd-ui-font-family:'Microsoft YaHei','PingFang SC',sans-serif;--sd-ui-comments-card-bg:#fffdfb;--sd-ui-comments-card-hover-bg:#fff7f1;--sd-ui-comments-card-active-bg:#fff;--sd-ui-comments-card-radius:2px;--sd-ui-comments-card-padding:12px;--sd-ui-comments-card-shadow:none;--sd-ui-comments-author-text:#df672e;--sd-ui-comments-author-size:12px;--sd-ui-comments-author-weight:600;--sd-ui-comments-body-size:12px;--sd-ui-comments-timestamp-size:10px;--sd-ui-comments-timestamp-text:#a4a4ac;--sd-ui-comments-separator:#eee7e1;--sd-ui-comments-card-active-border:#e88958;--sd-comments-highlight-external-base:#ed773f;--sd-comments-highlight-external:#ee85443a;--sd-comments-highlight-external-active:#ee854454;--sd-comments-highlight-external-faded:#ee85442a;--sd-comments-highlight-internal-base:#ed773f;--sd-comments-highlight-internal:#ee85443a;--sd-comments-highlight-internal-active:#ee854454;--sd-comments-highlight-internal-faded:#ee85442a;--sd-tracked-changes-insert-text:#8848c9;--sd-tracked-changes-insert-border:#8848c9;--sd-tracked-changes-delete-text:#8848c9;--sd-tracked-changes-delete-border:#8848c9;--sd-tracked-changes-insert-decoration-line:underline;--sd-ui-comments-insert-text:#8848c9;--sd-ui-comments-delete-text:#8848c9}
+.margin-review button,.margin-review select{font-family:inherit;cursor:pointer}
+.margin-review button:focus-visible,.margin-review select:focus-visible{outline:2px solid #4169d9;outline-offset:3px}
+.margin-review button:disabled{cursor:default;opacity:.42}
+.margin-topbar{flex-shrink:0;height:70px;padding:0 28px;display:flex;align-items:center;justify-content:space-between;gap:20px;background:#fff;border-bottom:1px solid #e8e9ed}
+.margin-file-group{display:flex;align-items:center;gap:12px;min-width:0}
+.margin-file-group h1{font-size:15px;font-weight:600;line-height:1.6;margin:0;max-width:550px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#20242c}
+.margin-file-group p{font-size:11px;color:#92949c;margin:2px 0 0;display:flex;align-items:center;gap:6px}
+.margin-save-dot{width:5px;height:5px;border-radius:50%;background:#61a78c;display:inline-block}
+.margin-save-dot.dirty{background:#e6a348}
+.margin-file-icon{width:36px;height:42px;background:#eef2fc;border:1px solid #e0e7fa;border-radius:5px;color:#446cbb;display:grid;place-items:center;flex-shrink:0}
+.margin-file-icon svg{width:26px;height:30px}
+.margin-top-actions{display:flex;align-items:center;gap:9px;flex-shrink:0}
+.margin-top-actions button{border:1px solid #dcdfe6;color:#5b606d;background:#fff;font-size:12px;border-radius:5px;height:33px;padding:0 14px;box-shadow:0 1px 2px #1a243008;white-space:nowrap}
+.margin-top-actions button:hover{background:#f7f8fa}
+.margin-top-actions .margin-primary{background:#3367d6;border-color:#3367d6;color:#fff;padding:0 20px}
+.margin-top-actions .margin-primary:hover{background:#2c59bd}
+.margin-top-actions .margin-more{width:30px;padding:0;border:0;font-size:20px;color:#8a8e99;box-shadow:none}
+.margin-back{border:0;background:none;color:#7c8391;font-size:30px;padding:0 7px 3px 0}
+.margin-review-tag{display:flex;align-items:center;gap:6px;font-size:11px;color:#8a5eb9;border:1px solid #e9dff7;background:#faf6ff;border-radius:4px;padding:4px 8px;margin-right:7px;white-space:nowrap}
+.margin-review-tag i{width:5px;height:5px;border-radius:50%;background:#9362ca}
+.margin-toolbar{height:44px;flex-shrink:0;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:0 29px;background:#fafbfc;border-bottom:1px solid #d8dbe3}
+.margin-tools{display:flex;gap:8px;align-items:center;min-width:0}
+.margin-tools button{background:none;color:#606776;border:0;border-radius:3px;padding:4px 8px;min-width:28px;height:29px;font-size:12px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.margin-tools button:first-child,.margin-tools button:nth-child(2){font-size:21px;padding:0 6px;color:#7d8492}
+.margin-tools button:hover,.margin-tools button.selected{background:#e9edf5}
+.margin-tools button svg{height:17px;width:17px}
+.margin-tool-divider{width:1px;height:17px;display:inline-block;background:#dfe2e8;margin:0 5px}
+.margin-display,.margin-zoom{display:flex;align-items:center;gap:8px;color:#8c919c;font-size:11px}
+.margin-display select,.margin-zoom select{border:0;background:transparent;color:#555d6b;font-size:12px;padding:4px;outline-offset:0;width:auto;max-width:155px;box-shadow:none;height:30px}
+.margin-zoom select{max-width:75px}
+.margin-author-key{display:flex;align-items:center;gap:5px;color:#9699a2;font-size:10px;white-space:nowrap}
+.margin-author-key i{width:6px;height:6px;background:#e87a46;border-radius:1px}
+.margin-author-key.purple i{background:#9754ce;margin-left:9px}
+.margin-formatting{padding:5px 30px;background:#fff;border-bottom:1px solid #e3e5eb;display:flex;align-items:center;gap:9px}
+.margin-formatting button{height:26px;min-width:28px;border:0;background:#f4f6fa;border-radius:3px;color:#404859}
+.margin-formatting>span{color:#9297a4;font-size:11px;margin-left:8px}
+.margin-error{position:relative;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 30px;background:#fff2ee;border-bottom:1px solid #f4ccc1;color:#ad492e;font-size:12px;flex-shrink:0}
+.margin-error button{background:none;border:0;color:inherit;font-size:20px;padding:0 6px}
+.margin-stage{flex:1;min-height:0;position:relative;overflow:auto;overscroll-behavior:contain;scrollbar-color:#c4c8d1 transparent;scrollbar-width:thin;background:#e6e8ed}
+.margin-review-summary{position:sticky;top:0;z-index:12;display:flex;align-items:center;justify-content:space-between;max-width:1180px;height:38px;margin:0 auto;padding:0 25px 0 12px;color:#8a8e99;pointer-events:none}
+.margin-page-label{font-size:10px;letter-spacing:1px}
+.margin-summary-filters{display:flex;gap:4px;margin-right:3px;pointer-events:auto}
+.margin-summary-filters button{background:transparent;font-size:10px;color:#9699a2;padding:3px 7px;border:0;border-radius:3px}
+.margin-summary-filters button b{font-size:10px;font-weight:500;margin-left:4px}
+.margin-summary-filters button.active{background:#f9fafc;color:#626877;box-shadow:0 1px 3px #1d29470d}
+.margin-editor-host{width:100%;min-height:100%;padding:0 28px 50px}
+.margin-editor-host>.superdoc{margin:0 auto;max-width:1160px;min-height:100%;font-family:'Microsoft YaHei',sans-serif}
+.margin-editor-host .superdoc__right-sidebar{background:#f7f7f8;border-left:1px solid #d9dce2;padding:14px 12px!important;width:320px!important;min-width:320px!important}
+.margin-editor-host .floating-comments{width:294px!important;min-width:294px!important}
+.margin-editor-host .floating-comment{min-width:294px!important}
+.margin-editor-host .comments-dialog{border-left:2px solid #e78754!important;box-shadow:none!important}
+.margin-editor-host .comment-header{margin-bottom:6px}
+.margin-editor-host .tracked-change{color:#6d3e9f}
+.margin-editor-host .comment p{line-height:1.65;margin:0 0 4px}
+.margin-editor-host .tracked-change-decision-alert{color:#a84a34;background:#fff2ec}
+.margin-statusbar{height:30px;flex-shrink:0;border-top:1px solid #d7dbe4;background:#f7f8fb;display:flex;align-items:center;justify-content:space-between;padding:0 25px;color:#9095a1;font-size:10px;gap:12px}
+.margin-statusbar>span:first-child{display:flex;align-items:center;gap:6px;white-space:nowrap}
+.margin-statusbar i{width:5px;height:5px;border-radius:50%;background:#70a797}
+.margin-status-separator{color:#c8ccd5;margin:0 8px}
+.margin-loading,.margin-load-failed{position:absolute;inset:0;z-index:15;background:#e6e8edf5;display:flex;align-items:center;justify-content:center;gap:12px;color:#818899;font-size:13px}
+.margin-loading>span{width:18px;height:18px;border:2px solid #cbd0db;border-top-color:#6a7fa8;border-radius:50%;animation:margin-spin .7s linear infinite}
+.margin-load-failed{flex-direction:column;gap:8px}
+.margin-load-failed h2{font-size:16px;font-weight:500;margin:0;color:#5f6879}
+.margin-load-failed p{max-width:500px;font-size:12px;text-align:center;line-height:1.8}
+.margin-load-failed button{border:1px solid #c4ccd9;background:#fff;border-radius:4px;padding:7px 18px;color:#50658b}
+.margin-review[data-filter=comments] .floating-comment:has(.tracked-change){display:none!important}
+.margin-review[data-filter=changes] .floating-comment:not(:has(.tracked-change)){display:none!important}
+@keyframes margin-spin{to{transform:rotate(360deg)}}
+@media(min-width:1650px){.margin-review-summary{max-width:1240px}.margin-editor-host>.superdoc{max-width:1220px}}
+@media(max-width:1000px){.margin-topbar{padding:0 14px;height:62px}.margin-file-group h1{max-width:330px;font-size:13px}.margin-review-tag{display:none}.margin-toolbar{padding:0 13px}.margin-author-key{display:none}.margin-editor-host{padding:0 10px 35px}.margin-statusbar>span:last-child{display:none}}
+@media(max-width:650px){.margin-topbar{gap:8px}.margin-file-icon{display:none}.margin-file-group h1{max-width:170px;font-size:12px}.margin-file-group p{font-size:9px}.margin-top-actions{gap:5px}.margin-top-actions button{font-size:10px;padding:0 8px;height:30px}.margin-top-actions .margin-primary{padding:0 8px}.margin-top-actions>button:first-of-type{display:none}.margin-toolbar{height:39px;padding:0 8px}.margin-tools{gap:1px}.margin-tools button{font-size:10px;padding:3px 5px}.margin-tools button>span,.margin-display>span{display:none}.margin-tool-divider{margin:0 3px}.margin-display select{max-width:126px;font-size:10px}.margin-editor-host{width:1120px;padding-left:10px}.margin-review-summary{min-width:1100px;position:relative}.margin-statusbar{padding:0 12px}.margin-summary-filters{margin-right:0}}
+@media(prefers-reduced-motion:reduce){.margin-loading>span{animation:none}.margin-review *{scroll-behavior:auto!important}}
+/* The margin shares the paper's scroll surface and uses live DOCX geometry. */
+.margin-review .margin-display,.margin-review .margin-zoom{display:flex;flex-direction:row;align-items:center;margin:0;gap:8px}
+.margin-review .margin-display>span{white-space:nowrap}
+.margin-document-surface{position:relative;min-height:100%;margin:0 auto 50px;isolation:isolate}
+.margin-document-surface .margin-editor-host{width:calc(100% - 320px);padding:0;min-height:100%}
+.margin-document-surface .margin-editor-host>.superdoc{max-width:none;width:100%;margin:0}
+.review-margin-layer{position:absolute;left:0;top:0;width:100%;pointer-events:none;z-index:3}
+.review-margin-paper{position:absolute;top:0;width:320px;background:#f8f8f9;border:1px solid #d2d5dc;box-shadow:1px 1px 4px #1725400a;z-index:-1}
+.review-margin-connectors{position:absolute;inset:0;overflow:visible;pointer-events:none}
+.review-margin-connectors path{stroke:#e28258;stroke-width:1;stroke-dasharray:2 3;fill:none;opacity:.72}
+.review-margin-connectors path.active{stroke-width:1.4;opacity:1}
+.review-margin-card{position:absolute;width:296px;padding:8px 9px 5px;background:#fbfaf9;border:1px solid transparent;border-left:2px solid #e9895b;pointer-events:auto;cursor:pointer;color:#30323a;font-size:11px;box-sizing:border-box}
+.review-margin-card:hover{background:#fff6f0;border-color:#f0dacd;border-left-color:#e9895b}
+.review-margin-card.active{background:#fff;border-color:#e9b496;border-left-color:#e07740;box-shadow:0 1px 4px #9c58300a}
+.review-margin-card>header{display:flex;align-items:center;gap:7px;min-height:23px;margin:0 0 6px;padding:0;background:none;border:0}
+.review-margin-avatar{width:23px;height:23px;display:grid;place-items:center;background:#e67a43;border-radius:4px;flex-shrink:0}
+.review-margin-avatar svg{width:20px;height:20px;fill:#fff}
+.review-margin-meta{flex:1;min-width:0;display:flex;align-items:center;gap:7px;justify-content:space-between}
+.review-margin-meta strong{font-size:11px;color:#dc713e;font-weight:600;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;max-width:158px}
+.review-margin-meta time{font-size:9px;color:#a3a5ae;white-space:nowrap}
+.review-margin-body,.review-margin-deleted,.review-margin-inserted{font-size:11px;line-height:1.7;margin:0;white-space:pre-line;overflow-wrap:anywhere;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+.review-margin-card.expanded .review-margin-body,.review-margin-card.expanded .review-margin-deleted,.review-margin-card.expanded .review-margin-inserted{-webkit-line-clamp:unset;display:block}
+.review-margin-card>footer{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:5px 0 0;padding:0;height:19px;background:none;border:0;font-size:9px;color:#a7a6ae}
+.review-margin-card button{padding:0 3px;border:0;background:transparent;font-family:inherit;font-size:10px;color:#a39a92;cursor:pointer;min-height:20px;box-shadow:none;border-radius:2px}
+.review-margin-card button:hover{background:#f1e8e1;color:#b9663e}
+.review-margin-card>footer>span{display:flex;gap:6px;align-items:center}
+.review-margin-change-label{font-size:11px;color:#30323a;margin:0 0 3px}
+.review-margin-deleted{color:#8e8782;-webkit-line-clamp:1;text-decoration:line-through;text-decoration-color:#a59c95}
+.review-margin-inserted{color:#30323a;-webkit-line-clamp:2;margin-top:3px}
+.review-margin-reply{padding:7px 0 0;margin:7px 0 0;border-top:1px solid #eee5df;line-height:1.6;font-size:11px;overflow-wrap:anywhere}
+.review-margin-reply strong{font-weight:500;color:#bd794f}
+.review-comment-backdrop{position:fixed;inset:0;z-index:50;display:grid;place-items:center;background:#1c243742;pointer-events:auto}
+.review-comment-composer{width:min(460px,90vw);background:#fff;border-radius:8px;padding:24px;box-shadow:0 10px 60px #17254026}
+.review-comment-composer h2{font-size:16px;margin:0 0 16px}
+.review-comment-composer textarea{width:100%;resize:vertical;border:1px solid #d4d9e4;border-radius:4px;padding:10px;font:13px/1.7 inherit;box-sizing:border-box}
+.review-comment-composer>div{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.review-comment-composer button{border:1px solid #d4d9e4;border-radius:4px;background:#fff;padding:7px 15px;color:#667080;font-size:12px}
+.review-comment-composer button[type=submit]{background:#3367d6;border-color:#3367d6;color:white}
+@media(max-width:650px){.margin-document-surface{margin-left:12px}.margin-document-surface .margin-editor-host{padding:0;width:calc(100% - 320px)}}
+.margin-review .superdoc-layout .track-insert-dec.highlighted,.margin-review .superdoc-layout .track-delete-dec.highlighted{border-top:0;border-bottom:0;background-color:transparent;color:#9146c4!important;text-decoration-color:#9146c4!important}
+.margin-review .superdoc-layout .track-insert-dec.highlighted{text-decoration-line:underline;text-underline-offset:2px}
+.margin-review .superdoc-layout .track-delete-dec.highlighted{text-decoration-line:line-through}
+.margin-review-summary{background:#e6e8edeb;backdrop-filter:blur(6px)}
+.margin-comment-feedback{display:flex;align-items:center;gap:12px;padding:8px 30px;background:#f0f7f3;border-bottom:1px solid #dce9e1;color:#4f735c;font-size:11px;flex-shrink:0}
+.margin-comment-feedback>span{flex:1}
+.margin-comment-feedback button{border:0;background:transparent;color:#407156;padding:2px 4px;font-size:11px;white-space:nowrap}
+.margin-comment-feedback button:last-child{font-size:18px;line-height:20px}
+.review-margin-card.resolved{background:#f4f6f5;border-left-color:#9aaea0;color:#67776c}
+.review-margin-card.resolved.active{background:#f4f8f5;border-color:#afc4b6;border-left-color:#7b9c86}
+.review-margin-card.resolved .review-margin-avatar{background:#91aa99}
+.review-margin-card.resolved .review-margin-meta strong{color:#627e6d}
+.review-comment-status{display:inline-block;margin:0 0 5px;padding:1px 5px;border-radius:3px;background:#e7efe9;color:#587c62;font-size:10px}
+.review-margin-empty{position:absolute;top:48px;width:296px;padding:16px;color:#7f8b85;font-size:11px;box-sizing:border-box}
+.review-margin-empty strong{font-size:12px;font-weight:500}
+.review-margin-empty p{margin:7px 0 0;font-size:11px;line-height:1.8}
+@media(max-width:650px){.margin-comment-feedback{padding:7px 12px;gap:6px;font-size:10px}.margin-comment-feedback button{font-size:10px}}

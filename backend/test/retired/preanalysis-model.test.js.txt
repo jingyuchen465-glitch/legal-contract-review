@@ -1,0 +1,29 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { config } = require('../pilot/config');
+const { createGateway } = require('../pilot/model');
+const document = { blocks: [{ id: 'b1', text: '甲方：虚构采购有限公司。乙方：虚构供应有限公司。退款期限为5个工作日。' }] };
+const valid = () => ({ contractType: '采购服务退款协议', parties: [{ name: '虚构采购有限公司', label: '甲方', role: '退款收款方', evidence: [{ blockId: 'b1', quote: '甲方：虚构采购有限公司' }] }], reviewPoints: [{ title: '退款到账期限', instruction: '核查5个工作日的起算日与到账标准', evidence: [{ blockId: 'b1', quote: '退款期限为5个工作日' }] }], corePurposes: ['确保按时收到退款'] });
+async function run(responder, fn) {
+  const saved = { ...config.model }; Object.assign(config.model, { baseUrl: 'http://localhost:9999/v1', name: 'preanalysis-fixture', key: 'fixture-only' });
+  let calls = 0;
+  try { const gateway = createGateway(null, { fetchImpl: async (_, req) => { calls++; const input = JSON.parse(JSON.parse(req.body).messages[1].content); return Response.json({ choices: [{ message: { content: JSON.stringify(await responder(input, calls)) } }] }); } }); await fn(gateway, () => calls); }
+  finally { Object.assign(config.model, saved); }
+}
+test('preanalysis uses concrete subjects with literal evidence and provided business background', async () => {
+  await run(input => { assert.equal(input.providedBackground.purpose, '核对退款金额'); return valid(); }, async gateway => { const result = await gateway.preAnalyze(document, null, { purpose: '核对退款金额' }); assert.equal(result.parties[0].name, '虚构采购有限公司'); assert.equal(result.reviewPoints[0].title, '退款到账期限'); });
+});
+test('invented subject names and fabricated review point evidence are corrected before showing choices', async () => {
+  await run((_, n) => { const result = valid(); if (n === 1) result.parties[0].name = '凭空出现的主体'; if (n === 2) result.reviewPoints[0].evidence[0].quote = '正文没有这个期限'; return result; }, async (gateway, calls) => { const result = await gateway.preAnalyze(document); assert.equal(calls(), 3); assert.equal(result.parties[0].name, '虚构采购有限公司'); });
+});
+test('unrecoverable preanalysis schema failures cannot become ready choices', async () => {
+  await run(() => ({ ...valid(), parties: 'not-an-array' }), async (gateway, calls) => { await assert.rejects(gateway.preAnalyze(document), { code: 'MODEL_OUTPUT_SCHEMA' }); assert.equal(calls(), 3); });
+});
+
+test('subjects without party labels or transaction roles remain explicit choices for human confirmation', async () => {
+  await run(() => { const result = valid(); result.parties[0].label = ' '; result.parties[0].role = ''; return result; }, async (gateway, calls) => {
+    const result = await gateway.preAnalyze(document);
+    assert.equal(calls(), 1); assert.equal(result.parties[0].label, '未标注'); assert.equal(result.parties[0].role, '待法务确认');
+    assert.equal(result.parties[0].name, '虚构采购有限公司'); assert.equal(result.parties[0].evidence[0].quote, '甲方：虚构采购有限公司');
+  });
+});

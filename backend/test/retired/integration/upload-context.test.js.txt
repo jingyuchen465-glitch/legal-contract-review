@@ -1,0 +1,224 @@
+const { test, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const path = require('node:path');
+const supertest = require('supertest');
+const AdmZip = require('adm-zip');
+const fs = require('node:fs/promises');
+const { config } = require('../../pilot/config');
+const { createDb } = require('../../pilot/db');
+const { migrate } = require('../../pilot/cli');
+const { hashPassword } = require('../../pilot/auth');
+const { createApp } = require('../../pilot/app');
+const { processReview } = require('../../pilot/workflow');
+
+const background = { ourEntity: '虚构采购公司', perspective: '采购方', purpose: '验证首次上传的类型和业务背景' };
+let rootDb, db, database, handle;
+const agents = {}, tokens = {}, users = {};
+function docx(text = '虚构采购合同，仅用于工程验证。') {
+  const zip = new AdmZip();
+  zip.addFile('word/document.xml', Buffer.from(`<w:document xmlns:w="urn:word"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`));
+  return zip.toBuffer();
+}
+function upload(actor, classification, context = background) {
+  const request = agents[actor].post('/api/contracts/upload').set('X-CSRF-Token', tokens[actor]).field('background', JSON.stringify(context));
+  if (classification !== undefined) request.field('classification', JSON.stringify(classification));
+  return request.attach('file', docx(), '虚构采购合同.docx');
+}
+const binary = request => request.buffer(true).parse((response, done) => {
+  const parts = []; response.on('data', part => parts.push(part)); response.on('end', () => done(null, Buffer.concat(parts)));
+});
+before(async () => {
+  rootDb = createDb(); database = 'legal_upload_context_' + randomUUID().replaceAll('-', '');
+  await rootDb.raw(`CREATE DATABASE "${database}"`);
+  const url = new URL(config.databaseUrl); url.pathname = '/' + database; config.databaseUrl = url.href;
+  config.dataRoot = path.resolve(__dirname, '../../../.local/test-data', database);
+  db = createDb(); await migrate(db); await require('../../pilot/storage').initializeDirectories();
+  const password = 'test-only-password-1234';
+  for (const actor of ['legal', 'business']) {
+    users[actor] = randomUUID();
+    await db('la_users').insert({ id: users[actor], username: actor, display_name: actor, department: '虚构工程部门', roles: JSON.stringify([actor]), password_hash: await hashPassword(password) });
+  }
+  handle = createApp(db);
+  for (const actor of ['legal', 'business']) {
+    agents[actor] = supertest.agent(handle.app);
+    const session = await agents[actor].get('/api/auth/session');
+    const login = await agents[actor].post('/api/auth/login').set('X-CSRF-Token', session.body.csrf).send({ username: actor, password }).expect(200);
+    tokens[actor] = login.body.csrf;
+  }
+  await db('la_rule_versions').insert({ id: randomUUID(), pack_id: 'upload-context', version_no: 1, name: '虚构工程规则', state: 'published', scope: JSON.stringify({ level: 'type', typeIds: ['procurement'] }), rules: JSON.stringify([{ id: 'delivery', title: '交付约定', instruction: '工程测试', severity: 'medium', mandatory: true }]), knowledge: '[]', created_by: users.legal, published_by: users.legal, published_at: new Date() });
+});
+after(async () => {
+  await handle?.close(); await db?.destroy();
+  if (rootDb && database) await rootDb.raw(`DROP DATABASE "${database}"`);
+  await rootDb?.destroy();
+});
+function gateway(assertContext, classify = async () => { throw new Error('上传已选择类型，不应再次自动分类'); }) {
+  return {
+    classify,
+    review: async (document, rules, knowledge, context) => {
+      assert.deepEqual(context, background); assertContext?.();
+      return { checks: [], coverage: { complete: true, totalRules: rules.length, checkedRules: rules.length, coveredBlockIds: document.blocks.map(b => b.id) } };
+    },
+  };
+}
+
+test('legal upload confirms type, tags and perspective for the first review without a second selection', async () => {
+  const archiveRoot = path.join(config.dataRoot, 'test-archive');
+  await db('la_settings').insert({ key: 'contract_archive', value: JSON.stringify({ enabled: true, root: archiveRoot }) });
+  const { body: created } = await upload('legal', { typeId: 'procurement', tags: ['知识产权'], perspectiveConfirmed: true }).expect(201);
+  assert.equal(created.archive.status, 'archived'); await fs.access(created.archive.path);
+  const classification = created.contract.classification;
+  assert.equal(classification?.typeId, 'procurement');
+  assert.equal(classification.confirmed, true); assert.equal(classification.perspectiveConfirmed, true);
+  assert.equal(classification.confirmedBy, users.legal); assert.equal(classification.versionId, created.version.id);
+  assert.deepEqual(classification.tags, ['知识产权']);
+  assert.equal((await db('la_reviews').where({ contract_id: created.contract.id })).length, 1);
+  let reviewed = false;
+  await processReview(db, created.reviewId, { gateway: gateway(() => { reviewed = true; }) });
+  assert.equal(reviewed, true);
+  const run = await db('la_reviews').where({ id: created.reviewId }).first();
+  assert.equal(run.status, 'completed'); assert.equal(run.snapshot.classification.typeId, 'procurement');
+  assert.equal(run.snapshot.classification.confirmed, true);
+  await db('la_settings').where({ key: 'contract_archive' }).del();
+});
+
+test('business upload uses the selected type but preserves legal confirmation permissions', async () => {
+  const { body: created } = await upload('business', { typeId: 'procurement', tags: [], perspectiveConfirmed: false }).expect(201);
+  assert.equal(created.contract.classification?.typeId, 'procurement');
+  assert.equal(created.contract.classification.confirmed, false);
+  assert.equal(created.contract.classification.perspectiveConfirmed, false);
+  await processReview(db, created.reviewId, { gateway: gateway() });
+  const run = await db('la_reviews').where({ id: created.reviewId }).first();
+  assert.equal(run.status, 'completed'); assert.equal(run.snapshot.classification.confirmed, false);
+  await upload('business', { typeId: 'procurement', tags: [], perspectiveConfirmed: true }).expect(403);
+});
+
+test('invalid types, tags and blank confirmed backgrounds are rejected without creating contracts', async () => {
+  const before = Number((await db('la_contracts').count('* as n').first()).n);
+  await upload('legal', { typeId: 'unknown', tags: [], perspectiveConfirmed: true }).expect(400);
+  await upload('legal', { typeId: 'procurement', tags: ['未知标签'], perspectiveConfirmed: true }).expect(400);
+  await upload('legal', { typeId: 'procurement', tags: [], perspectiveConfirmed: true }, { ...background, purpose: '   ' }).expect(400);
+  assert.equal(Number((await db('la_contracts').count('* as n').first()).n), before);
+});
+
+test('uploads without a type keep automatic classification; new versions require classification again', async () => {
+  const { body: automatic } = await upload('legal').expect(201);
+  let classified = 0;
+  const automaticGateway = gateway(null, async () => { classified++; return { typeId: 'procurement', tags: [], confirmed: false }; });
+  await processReview(db, automatic.reviewId, { gateway: automaticGateway }); assert.equal(classified, 1);
+  const { body: selected } = await upload('legal', { typeId: 'procurement', tags: [], perspectiveConfirmed: true }).expect(201);
+  const { body: next } = await agents.legal.post(`/api/contracts/${selected.contract.id}/versions`).set('X-CSRF-Token', tokens.legal).field('revision', selected.contract.revision).attach('file', docx('虚构修改版本，应重新确认分类。'), '修改稿.docx').expect(201);
+  await processReview(db, next.reviewId, { gateway: automaticGateway }); assert.equal(classified, 2);
+  const updated = await db('la_contracts').where({ id: selected.contract.id }).first();
+  assert.equal(updated.classification.confirmed, false); assert.equal(updated.classification.versionId, next.version.id);
+});
+
+test('supplement upload starts a new review on the same main contract and pins the associated material', async () => {
+  const { body: created } = await upload('legal', { typeId: 'procurement', tags: [], perspectiveConfirmed: true }).expect(201);
+  const source = await agents.legal.get('/api/contracts/' + created.contract.id).expect(200);
+  const { body: attachment } = await agents.legal.post(`/api/contracts/${created.contract.id}/versions`).set('X-CSRF-Token', tokens.legal)
+    .field('revision', source.body.revision).field('kind', 'supplement').attach('file', docx('主合同约定：服务期限为一年。'), '关联主合同.docx').expect(201);
+  assert.ok(attachment.reviewId, '补充材料上传后应明确返回新的预审任务');
+  const current = (await agents.legal.get('/api/contracts/' + created.contract.id).expect(200)).body;
+  assert.equal(current.current_version_id, created.version.id);
+  assert.equal(current.current_review_id, attachment.reviewId);
+  const old = (await agents.legal.get('/api/reviews/' + created.reviewId).expect(200)).body;
+  assert.deepEqual(old.snapshot.supplements, []);
+  await processReview(db, attachment.reviewId, { gateway: {
+    classify: async () => { throw new Error('主文分类仍有效'); },
+    review: async (document, rules, knowledge, context) => {
+      assert.equal(context.supportingDocuments[0].versionId, attachment.version.id);
+      assert.equal(context.supportingDocuments[0].blocks[0].text, '主合同约定：服务期限为一年。');
+      assert.ok(!document.blocks.some(b => b.text.includes('服务期限为一年')));
+      return { checks: [], coverage: { complete: true, totalRules: rules.length, checkedRules: rules.length } };
+    },
+  } });
+  const run = (await agents.legal.get('/api/reviews/' + attachment.reviewId).expect(200)).body;
+  assert.equal(run.status, 'completed');
+  assert.equal(run.snapshot.supplements[0].sha256, attachment.version.sha256);
+  const latest = (await agents.legal.get('/api/contracts/' + current.id).expect(200)).body;
+  const { body: without } = await agents.legal.patch(`/api/contracts/${current.id}/background`).set('X-CSRF-Token', tokens.legal)
+    .send({ revision: latest.revision, background: { ...background, supplementIds: [] } }).expect(200);
+  const excluded = (await agents.legal.get('/api/reviews/' + without.reviewId).expect(200)).body;
+  assert.deepEqual(excluded.snapshot.supplements, []);
+  const retained = (await agents.legal.get('/api/reviews/' + attachment.reviewId).expect(200)).body;
+  assert.equal(retained.snapshot.supplements[0].id, attachment.version.id);
+});
+
+test('party selection avoids retyping company names and a new background is pinned before review', async () => {
+  const context = { ourEntity: '', ourSide: 'party_a', perspective: '采购方', purpose: '采购设备' };
+  const { body: created } = await upload('legal', { typeId: 'procurement', tags: [], perspectiveConfirmed: true }, context).expect(201);
+  assert.equal(created.contract.background.ourEntity, '合同所列甲方');
+  assert.equal(created.contract.background.ourSide, 'party_a');
+  const changed = { ...created.contract.background, purpose: '审核设备验收与付款条件' };
+  const { body: result } = await agents.legal.patch(`/api/contracts/${created.contract.id}/background`).set('X-CSRF-Token', tokens.legal)
+    .send({ revision: created.contract.revision, background: changed }).expect(200);
+  const old = (await agents.legal.get('/api/reviews/' + created.reviewId).expect(200)).body;
+  const current = (await agents.legal.get('/api/reviews/' + result.reviewId).expect(200)).body;
+  assert.equal(old.snapshot.background.purpose, '采购设备');
+  assert.equal(current.snapshot.background.purpose, '审核设备验收与付款条件');
+});
+
+test('final download requires an agreeing decision and remains bound to the approved bytes after another upload', async () => {
+  const { body: created } = await upload('legal', { typeId: 'procurement', tags: [], perspectiveConfirmed: true }).expect(201);
+  const url = `/api/reviews/${created.reviewId}/final-contract`;
+  await agents.legal.get(url).expect(409);
+  await processReview(db, created.reviewId, { gateway: gateway() });
+  const c = (await agents.legal.get('/api/contracts/' + created.contract.id).expect(200)).body;
+  await agents.legal.post(`/api/reviews/${created.reviewId}/decision`).set('X-CSRF-Token', tokens.legal).send({ revision: c.revision, outcome: 'agree' }).expect(201);
+  const download = await binary(agents.legal.get(url)).expect(200);
+  assert.equal(require('../../pilot/storage').sha256(download.body), created.version.sha256);
+  await agents.business.get(url).expect(404);
+  const latest = (await agents.legal.get('/api/contracts/' + c.id).expect(200)).body;
+  await agents.legal.post(`/api/contracts/${c.id}/versions`).set('X-CSRF-Token', tokens.legal).field('revision', latest.revision)
+    .attach('file', docx('尚未审核的下一稿。'), '下一稿.docx').expect(201);
+  const historical = await binary(agents.legal.get(url)).expect(200);
+  assert.equal(require('../../pilot/storage').sha256(historical.body), created.version.sha256);
+});
+
+test('review plan previews exact published checks for the selected type without starting a review', async () => {
+  const { body: plan } = await agents.legal.get('/api/review-plan').query({ typeId: 'procurement' }).expect(200);
+  assert.equal(plan.available, true); assert.equal(plan.rules.length, 1);
+  assert.equal(plan.rules[0].title, '交付约定');
+  assert.equal(plan.packs[0].version, 1);
+  const { body: unavailable } = await agents.legal.get('/api/review-plan').query({ typeId: 'other' }).expect(200);
+  assert.equal(unavailable.available, true); assert.ok(unavailable.rules.length > 0); assert.ok(unavailable.packs.every(p => p.source === 'builtin'));
+});
+
+test('identical opinions across rules are displayed once and a legal action handles the group while retaining rule coverage', async () => {
+  const packId = randomUUID();
+  await db('la_rule_versions').insert({ id: packId, pack_id: 'duplicate-fixture', version_no: 1, name: '重复意见夹具', state: 'published', scope: JSON.stringify({ level: 'type', typeIds: ['procurement'] }), rules: JSON.stringify([{ id: 'duplicate-delivery', title: '另一交付检查', instruction: '测试', severity: 'high' }]), knowledge: '[]', created_by: users.legal });
+  try {
+    const { body: created } = await upload('legal', { typeId: 'procurement', tags: [], perspectiveConfirmed: true }).expect(201);
+    await processReview(db, created.reviewId, { gateway: { review: async (document, rules) => ({ checks: rules.map(r => ({ ruleId: r.id, title: r.title, status: 'fail', kind: 'clause', severity: 'high', reason: '没有交付期限', suggestion: '新增：“乙方应于【待双方确认】日前交付。”', evidence: [{ blockId: 'b1', quote: '虚构采购合同' }], legalRefIds: [] })), coverage: { complete: true, totalRules: 2, checkedRules: 2 } }) } });
+    const run = (await agents.legal.get('/api/reviews/' + created.reviewId).expect(200)).body;
+    assert.equal(run.findings.length, 2); assert.equal(run.opinionGroups.length, 1);
+    assert.equal(run.opinionGroups[0].relatedFindings.length, 2);
+    await agents.legal.put(`/api/reviews/${run.id}/findings/${run.opinionGroups[0].id}/disposition`).set('X-CSRF-Token', tokens.legal)
+      .send({ revision: run.opinionGroups[0].revision, action: 'accept', applyToDuplicates: true }).expect(200);
+    const processed = (await agents.legal.get('/api/reviews/' + run.id).expect(200)).body;
+    assert.ok(processed.findings.every(f => f.disposition.action === 'accept'));
+    assert.equal(processed.coverage.checkedRules, 2);
+  } finally { await db('la_rule_versions').where({ id: packId }).del(); }
+});
+
+test('parsed PDF can be downloaded as an editable text reconstruction without replacing the source', async () => {
+  const PDFDocument = require('pdfkit'), pdf = new PDFDocument(), parts = [];
+  pdf.on('data', part => parts.push(part)); const ended = new Promise(resolve => pdf.on('end', resolve));
+  pdf.text('The supplier shall deliver the equipment within thirty days.'); pdf.end(); await ended;
+  const { body: created } = await agents.legal.post('/api/contracts/upload').set('X-CSRF-Token', tokens.legal)
+    .field('background', JSON.stringify(background)).field('classification', JSON.stringify({ typeId: 'procurement', tags: [], perspectiveConfirmed: true }))
+    .attach('file', Buffer.concat(parts), '虚构PDF.pdf').expect(201);
+  const url = `/api/versions/${created.version.id}/editable-word`;
+  await agents.legal.get(url).expect(409);
+  await processReview(db, created.reviewId, { gateway: gateway() });
+  const result = await binary(agents.legal.get(url)).expect(200);
+  const parsed = require('../../pilot/parser').parseDocx(result.body);
+  assert.ok(parsed.blocks.some(b => b.text.includes('The supplier shall deliver')));
+  assert.ok(parsed.blocks.some(b => b.text.includes('文字重建')));
+  const current = (await agents.legal.get('/api/contracts/' + created.contract.id).expect(200)).body;
+  assert.equal(current.current_version_id, created.version.id);
+  const source = await binary(agents.legal.get(`/api/files/${created.version.id}`)).expect(200);
+  assert.equal(require('../../pilot/storage').sha256(source.body), created.version.sha256);
+});

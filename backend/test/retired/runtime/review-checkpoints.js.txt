@@ -1,0 +1,27 @@
+const { fail } = require('./errors');
+
+// Checkpoints belong to one review, never to a contract-wide or global cache.
+// The gateway's digest also binds model, prompt, rules, context and all text.
+function createReviewBatchStore(db, reviewId) {
+  return {
+    async assertActive() {
+      const run = await db('la_reviews').where({ id: reviewId }).select('status').first();
+      if (run?.status === 'cancelled') fail(409, 'REVIEW_CANCELLED', '任务已取消');
+      if (run?.status !== 'running') fail(409, 'REVIEW_NOT_RUNNING', '预审任务已停止，请重试');
+    },
+    async load(key) {
+      const row = await db('la_job_steps').where({ review_id: reviewId, stage: 'review_checkpoint', status: 'completed' })
+        .whereRaw("details->>'key' = ?", [key]).orderBy('id', 'desc').first();
+      return row?.details?.checks;
+    },
+    async save(key, checks, context) {
+      await db.transaction(async trx => {
+        const run = await trx('la_reviews').where({ id: reviewId }).forUpdate().first();
+        if (run?.status === 'cancelled') fail(409, 'REVIEW_CANCELLED', '任务已取消');
+        if (run?.status !== 'running') fail(409, 'REVIEW_NOT_RUNNING', '预审任务已停止，请重试');
+        await trx('la_job_steps').insert({ review_id: reviewId, stage: 'review_checkpoint', status: 'completed', details: JSON.stringify({ key, checks, ...context }) });
+      });
+    },
+  };
+}
+module.exports = { createReviewBatchStore };

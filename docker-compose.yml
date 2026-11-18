@@ -10,15 +10,26 @@ x-app-env: &app-env
   TOKEN_SECRET: ${TOKEN_SECRET:?set TOKEN_SECRET}
   TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-0}
   MODEL_BASE_URL: ${MODEL_BASE_URL:-}
+  PDF_WORD_ENABLED: ${PDF_WORD_ENABLED:-false}
   MODEL_NAME: ${MODEL_NAME:-}
   MODEL_API_KEY: ${MODEL_API_KEY:-}
   MODEL_CONCURRENCY: ${MODEL_CONCURRENCY:-2}
+  AGENT_MAX_REQUESTS: ${AGENT_MAX_REQUESTS:-40}
+  AGENT_MAX_MINUTES: ${AGENT_MAX_MINUTES:-30}
+  AGENT_CONTEXT_WINDOW: ${AGENT_CONTEXT_WINDOW:-128000}
+  AGENT_MAX_OUTPUT_TOKENS: ${AGENT_MAX_OUTPUT_TOKENS:-12000}
+  AGENT_THINKING_FORMAT: ${AGENT_THINKING_FORMAT:-openai}
+  AGENT_REASONING: ${AGENT_REASONING:-false}
+  BRAVE_SEARCH_API_KEY: ${BRAVE_SEARCH_API_KEY:-}
   MODEL_TIMEOUT_MS: ${MODEL_TIMEOUT_MS:-120000}
   EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
   MILVUS_ADDRESS: milvus:19530
   MILVUS_TOKEN: ${MILVUS_TOKEN:-}
   OCR_URL: http://ocr:8090
   OCR_TOKEN: ${OCR_TOKEN:?set OCR_TOKEN}
+  CONVERTER_URL: http://converter:8091
+  CONVERTER_TOKEN: ${CONVERTER_TOKEN:?set CONVERTER_TOKEN}
+  CONVERTER_TIMEOUT_MS: ${CONVERTER_TIMEOUT_MS:-300000}
   ONLYOFFICE_URL: ${ONLYOFFICE_URL:-http://localhost:8081}
   ONLYOFFICE_INTERNAL_URL: http://onlyoffice
   ONLYOFFICE_JWT_SECRET: ${ONLYOFFICE_JWT_SECRET:?set ONLYOFFICE_JWT_SECRET}
@@ -54,6 +65,7 @@ services:
       - ${DATA_ROOT:-D:/LegalAgentData}/application:/data
     depends_on:
       postgres: {condition: service_healthy}
+    networks: [default, conversion]
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 15s
@@ -67,6 +79,26 @@ services:
       - ${DATA_ROOT:-D:/LegalAgentData}/application:/data
     depends_on:
       api: {condition: service_healthy}
+      converter: {condition: service_healthy}
+    networks: [default, conversion]
+    restart: unless-stopped
+  converter:
+    build: ./converter
+    environment:
+      CONVERTER_TOKEN: ${CONVERTER_TOKEN:?set CONVERTER_TOKEN}
+    networks: [conversion]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,size=512m,uid=1000,gid=1000
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 128
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    healthcheck:
+      test: [CMD, python, -c, "import json,urllib.request; r=json.load(urllib.request.urlopen('http://127.0.0.1:8091/health')); assert r['ok']"]
+      interval: 15s
+      retries: 10
     restart: unless-stopped
   ocr:
     build: ./ocr
@@ -120,3 +152,6 @@ volumes:
   etcd-data:
   minio-data:
   milvus-data:
+networks:
+  conversion:
+    internal: true

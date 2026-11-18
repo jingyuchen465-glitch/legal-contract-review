@@ -1,8 +1,10 @@
 const AdmZip = require('adm-zip');
+const path = require('node:path');
 const { XMLParser } = require('fast-xml-parser');
 const { config } = require('./config');
 const { fail, AppError } = require('./errors');
-const parserVersion = 'structured-1.2';
+const { wordText: textOf } = require('./word-text');
+const parserVersion = 'structured-1.3';
 function parseDocx(buffer) {
   let zip;
   try { zip = new AdmZip(buffer); } catch { fail(422, 'INVALID_DOCX', 'DOCX 已损坏或加密'); }
@@ -11,20 +13,30 @@ function parseDocx(buffer) {
   const entry = zip.getEntry('word/document.xml'); if (!entry) fail(422, 'INVALID_DOCX', 'DOCX 缺少正文');
   const xml = zip.readAsText(entry);
   if (/<!DOCTYPE|<!ENTITY/i.test(xml)) fail(422, 'INVALID_XML', '不支持包含外部实体的文档');
-  const tree = new XMLParser({ preserveOrder: true, ignoreAttributes: false, processEntities: true }).parse(xml);
-  const textOf = nodes => nodes.map(node => Object.entries(node).map(([key, value]) => ['w:del','w:moveFrom','w:instrText'].includes(key) ? '' : key === '#text' ? String(value) : key === 'w:tab' ? '\t' : key === 'w:br' ? '\n' : Array.isArray(value) ? textOf(value) : '').join('')).join('');
+  const tree = new XMLParser({ preserveOrder: true, ignoreAttributes: false, processEntities: true, parseTagValue: false, trimValues: false }).parse(xml);
   const prop=(nodes,key)=>nodes?.find(n=>key in n), val=node=>node?.[':@']?.['@_w:val'];
   const numberingXml=zip.getEntry('word/numbering.xml')&&zip.readAsText('word/numbering.xml');
   const numbering=numberingXml?new XMLParser({ignoreAttributes:false}).parse(numberingXml)['w:numbering']:null;
   const list=v=>v?(Array.isArray(v)?v:[v]):[], counters=new Map();
   function numberOf(value){const pr=prop(value,'w:pPr')?.['w:pPr'],num=prop(pr,'w:numPr')?.['w:numPr'];if(!num)return{};const numId=val(prop(num,'w:numId')),level=Number(val(prop(num,'w:ilvl'))||0);const mapping=list(numbering?.['w:num']).find(n=>String(n['@_w:numId'])===String(numId));const abstractId=mapping?.['w:abstractNumId']?.['@_w:val'];const definition=list(numbering?.['w:abstractNum']).find(n=>String(n['@_w:abstractNumId'])===String(abstractId));const levels=list(definition?.['w:lvl']);const lv=levels.find(n=>Number(n['@_w:ilvl'])===level);const values=counters.get(numId)||[];values[level]=(values[level]??Number(lv?.['w:start']?.['@_w:val']||1)-1)+1;values.length=level+1;counters.set(numId,values);const pattern=lv?.['w:lvlText']?.['@_w:val'];const numberLabel=pattern?String(pattern).replace(/%([1-9])/g,(_,n)=>String(values[Number(n)-1]||1)):null;return{numbering:{numId,level,format:lv?.['w:numFmt']?.['@_w:val']||'unknown',label:numberLabel}};}
-  const blocks = []; let tableSequence=0;
+  const blocks = [], commentAnchors = new Map(), revisions = []; let tableSequence=0;
+  function scanMarkup(nodes, blockId) {
+    for (const node of nodes || []) for (const [key, value] of Object.entries(node)) {
+      if (['w:commentRangeStart', 'w:commentReference'].includes(key)) {
+        const id = node[':@']?.['@_w:id'];
+        if (id !== undefined) commentAnchors.set(String(id), [...new Set([...(commentAnchors.get(String(id)) || []), blockId])]);
+      }
+      if (['w:ins', 'w:del', 'w:moveFrom', 'w:moveTo'].includes(key)) revisions.push({ type: { 'w:ins': 'insert', 'w:del': 'delete', 'w:moveFrom': 'move_from', 'w:moveTo': 'move_to' }[key], author: node[':@']?.['@_w:author'] || '', date: node[':@']?.['@_w:date'] || null, text: textOf(value), blockId });
+      if (Array.isArray(value)) scanMarkup(value, blockId);
+    }
+  }
   function walk(nodes, table = null, row=null, cell = null) {
     let rowSequence=0,cellSequence=0;
     for (const node of nodes || []) for (const [key, value] of Object.entries(node)) {
       if (!Array.isArray(value)) continue;
       if (key === 'w:p') {
         const raw = textOf(value).trim(), style=val(prop(prop(value,'w:pPr')?.['w:pPr'],'w:pStyle')); const metadata=numberOf(value);const text=raw && metadata.numbering?.label?`${metadata.numbering.label} ${raw}`:raw;
+        scanMarkup(value, text ? `b${blocks.length + 1}` : null);
         if (text) blocks.push({ id: `b${blocks.length + 1}`, text, page: null, kind: table ? 'table_cell' : /heading|标题/i.test(style||'')?'heading':'paragraph', style, table, row, cell, ...metadata, paragraph: blocks.length + 1, source: 'docx' });
       } else if (['w:del','w:moveFrom'].includes(key)) continue;
       else if (key === 'w:tbl') walk(value, ++tableSequence, null, null);
@@ -36,7 +48,30 @@ function parseDocx(buffer) {
   walk(tree);
   if (!blocks.length) fail(422, 'EMPTY_TEXT', 'DOCX 未提取到正文，请补充文字版合同');
   const hasRevisions=/<w:(ins|del|moveFrom|moveTo)\b/.test(xml);
-  return { parserVersion, format: 'docx', blocks, requiresHumanVerification:hasRevisions, warnings: ['DOCX 位置按段落及表格编号显示，页码随编辑器排版变化。',...(hasRevisions?['文档包含修订标记；预审使用当前文本视图（含插入、不含删除），请法务在 Word 或编辑器核实修订内容。']:[])] };
+  const originalComments = [];
+  let commentsPart = 'word/comments.xml';
+  if (zip.getEntry('word/_rels/document.xml.rels')) {
+    const relationshipXml = zip.readAsText('word/_rels/document.xml.rels');
+    if (/<!DOCTYPE|<!ENTITY/i.test(relationshipXml)) fail(422, 'INVALID_XML', '不支持包含外部实体的文档关系');
+    const relations = new XMLParser({ ignoreAttributes: false }).parse(relationshipXml)?.Relationships?.Relationship;
+    const relation = list(relations).find(r => r['@_Type'] === 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments');
+    if (relation) {
+      const target = String(relation['@_Target'] || '').replace(/\\/g, '/');
+      commentsPart = path.posix.normalize(target.startsWith('/') ? target.slice(1) : path.posix.join('word', target));
+      if (relation['@_TargetMode'] === 'External' || commentsPart.startsWith('../') || !zip.getEntry(commentsPart)) fail(422, 'INVALID_XML', '原件旁批关系无效或批注内容缺失，请提供完整 Word 文件');
+    }
+  }
+  if (zip.getEntry(commentsPart)) {
+    const commentsXml = zip.readAsText(commentsPart);
+    if (/<!DOCTYPE|<!ENTITY/i.test(commentsXml)) fail(422, 'INVALID_DOCX_XML', '不支持包含外部实体的批注文档');
+    const commentsTree = new XMLParser({ preserveOrder: true, ignoreAttributes: false, processEntities: true, parseTagValue: false, trimValues: false }).parse(commentsXml);
+    function readComments(nodes) { for (const node of nodes || []) for (const [key, value] of Object.entries(node)) {
+      if (key === 'w:comment') { const attrs = node[':@'] || {}, id = String(attrs['@_w:id']); originalComments.push({ id, author: attrs['@_w:author'] || '', date: attrs['@_w:date'] || null, text: value.filter(n => n['w:p']).map(n => textOf(n['w:p'])).join('\n'), blockIds: (commentAnchors.get(id) || []).filter(Boolean) }); }
+      else if (Array.isArray(value)) readComments(value);
+    } }
+    readComments(commentsTree);
+  }
+  return { parserVersion, format: 'docx', blocks, originalComments, revisions, requiresHumanVerification:hasRevisions || originalComments.length > 0, warnings: ['DOCX 位置按段落及表格编号显示，页码随编辑器排版变化。',...(hasRevisions?['文档包含修订标记；预审使用当前文本视图（含插入、不含删除），请法务在 Word 或编辑器核实修订内容。']:[]), ...(originalComments.length ? [`原件包含 ${originalComments.length} 条已有旁批，请结合原文核对，原有旁批不代表本次 AI 结论。`] : [])] };
 }
 async function ocrPage(buffer, page) {
   if (!config.ocrUrl || !config.ocrToken) fail(422, 'OCR_NOT_CONFIGURED', '检测到扫描页，请配置 OCR 服务或补充文字版合同');
@@ -47,7 +82,7 @@ async function ocrPage(buffer, page) {
   if (!response.ok) throw new AppError(response.status >= 500 ? 503 : 422, 'OCR_FAILED', '扫描页识别失败，请人工处理或补件');
   return response.json();
 }
-async function parsePdf(buffer, ocr = ocrPage) {
+async function parsePdf(buffer, ocr = ocrPage, { detectMixed = false } = {}) {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
   let pdf, loadingTask;
   try { loadingTask = pdfjs.getDocument({ data: new Uint8Array(buffer), isEvalSupported: false, useSystemFonts: true }); pdf = await loadingTask.promise; }
@@ -65,7 +100,7 @@ async function parsePdf(buffer, ocr = ocrPage) {
         page.cleanup();
         continue;
       }
-      if (!textItems.length && hasDrawableContent) {
+      if ((!textItems.length && hasDrawableContent) || (detectMixed && hasImage)) {
         const result = await ocr(buffer, n);
         if (!result.blocks?.length) fail(422, 'OCR_EMPTY', `第 ${n} 页无法识别，请补件`);
         for (const item of result.blocks) {
@@ -85,7 +120,7 @@ async function parsePdf(buffer, ocr = ocrPage) {
     return { parserVersion, format: 'pdf', pageCount: pdf.numPages, blocks, requiresHumanVerification: warnings.length>0, warnings: [...new Set(warnings)] };
   } finally { await loadingTask.destroy(); }
 }
-async function parseDocument(buffer, filename, options = {}) { return filename.toLowerCase().endsWith('.docx') ? parseDocx(buffer) : parsePdf(buffer, options.ocr); }
+async function parseDocument(buffer, filename, options = {}) { return filename.toLowerCase().endsWith('.docx') ? parseDocx(buffer) : parsePdf(buffer, options.ocr, options); }
 function chunks(document, maxChars = 16000) {
   const result = []; let current = [], length = 0;
   for (const block of document.blocks) {

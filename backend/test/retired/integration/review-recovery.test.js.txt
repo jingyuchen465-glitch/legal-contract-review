@@ -1,0 +1,136 @@
+const { test, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const path = require('node:path');
+const supertest = require('supertest');
+const AdmZip = require('adm-zip');
+const { config } = require('../../pilot/config');
+const { createDb } = require('../../pilot/db');
+const { migrate } = require('../../pilot/cli');
+const { createApp } = require('../../pilot/app');
+const { hashPassword } = require('../../pilot/auth');
+const { createGateway, publicModelSnapshot } = require('../../pilot/model');
+const { processReview } = require('../../pilot/workflow');
+const { createReviewBatchStore } = require('../../pilot/review-checkpoints');
+
+let rootDb, db, database, handle, agent, csrf, savedModel;
+const background = { ourEntity: '虚构测试公司', perspective: '采购方', purpose: '验证双语合同预审恢复' };
+const rules = Array.from({ length: 6 }, (_, i) => ({ id: `r${i}`, title: `测试规则${i}` }));
+before(async () => {
+  rootDb = createDb(); database = 'legal_test_recovery_' + randomUUID().replaceAll('-', '');
+  await rootDb.raw(`CREATE DATABASE "${database}"`);
+  const url = new URL(config.databaseUrl); url.pathname = '/' + database; config.databaseUrl = url.href;
+  config.dataRoot = path.resolve(__dirname, '../../../.local/test-data', database);
+  db = createDb(); await migrate(db);
+  savedModel = { ...config.model }; Object.assign(config.model, { baseUrl: 'http://localhost:9999/v1', name: 'recovery-fixture', key: 'fixture-only' });
+  const password = 'recovery-tests-only-1234';
+  await db('la_users').insert({ id: randomUUID(), username: 'recovery_admin', display_name: '测试管理员', roles: JSON.stringify(['admin']), password_hash: await hashPassword(password) });
+  handle = createApp(db); agent = supertest.agent(handle.app);
+  const session = await agent.get('/api/auth/session');
+  const login = await agent.post('/api/auth/login').set('X-CSRF-Token', session.body.csrf).send({ username: 'recovery_admin', password }).expect(200); csrf = login.body.csrf;
+});
+after(async () => {
+  if (savedModel) Object.assign(config.model, savedModel);
+  await handle?.close(); await db?.destroy();
+  if (rootDb && database) { await rootDb.raw('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ? AND pid <> pg_backend_pid()', [database]); await rootDb.raw(`DROP DATABASE "${database}"`); }
+  await rootDb?.destroy();
+});
+
+async function fixture() {
+  const zip = new AdmZip();
+  zip.addFile('word/document.xml', Buffer.from('<w:document xmlns:w="urn:word"><w:body><w:p><w:r><w:t>Payment is due after delivery.</w:t></w:r></w:p><w:p><w:r><w:t>款项应在交付后支付。</w:t></w:r></w:p></w:body></w:document>'));
+  const result = await agent.post('/api/contracts/upload').set('X-CSRF-Token', csrf).field('background', JSON.stringify(background)).attach('file', zip.toBuffer(), `虚构恢复验证-${randomUUID()}.docx`).expect(201);
+  const snapshot = { model: publicModelSnapshot(config.model), rules, knowledge: [], background, reviewMode: 'formal' };
+  await db('la_reviews').where({ id: result.body.reviewId }).update({ snapshot: JSON.stringify(snapshot) });
+  return { ...result.body, snapshot };
+}
+function gateway(snapshot, responder) {
+  return createGateway(db, { pinnedModel: snapshot.model, reviewExecution: snapshot.reviewExecution || require('../../pilot/review-planning').LEGACY_EXECUTION, fetchImpl: async (_, request) => {
+    const input = JSON.parse(JSON.parse(request.body).messages[1].content);
+    const checks = input.rules.map(rule => ({ ruleId: rule.id, status: 'uncertain', kind: 'uncertain', severity: 'high', reason: '付款日期待核实', suggestion: '核实付款条件', evidence: [{ blockId: 'b1', quote: '款项应在交付后支付。' }], legalRefIds: [] }));
+    await responder?.(input, checks);
+    return Response.json({ choices: [{ message: { content: JSON.stringify({ checks }) } }] });
+  } });
+}
+
+test('workflow persists validated batches and diagnostic errors, then retry resumes through the existing API', async () => {
+  const item = await fixture(), logs = [], requests = [];
+  await processReview(db, item.reviewId, { gateway: gateway(item.snapshot, (input, checks) => { requests.push(input.ruleBatchIndex); if (input.ruleBatchIndex === 2) checks[0].status = 'invalid'; }), logError: e => logs.push(e) });
+  let run = await db('la_reviews').where({ id: item.reviewId }).first();
+  assert.equal(run.status, 'waiting_input'); assert.equal(run.error_code, 'MODEL_OUTPUT_SCHEMA'); assert.equal(run.progress, 70);
+  assert.deepEqual(requests.toSorted((a, b) => a - b), [1, 2, 2, 2]);
+  assert.equal((await db('la_findings').where({ review_id: item.reviewId })).length, 0);
+  assert.equal((await db('la_job_steps').where({ review_id: item.reviewId, stage: 'review_checkpoint' })).length, 1);
+  assert.equal(logs[0].ruleBatchIndex, 2); assert.equal(logs[0].attempt, 3);
+  assert.ok(logs[0].issues.some(i => i.path === 'checks.0.status'));
+  assert.ok(!JSON.stringify(logs).includes('款项')); assert.ok(!JSON.stringify(logs).includes('fixture-only'));
+  await agent.post(`/api/operations/reviews/${item.reviewId}/retry`).set('X-CSRF-Token', csrf).send({}).expect(202);
+  requests.length = 0;
+  await processReview(db, item.reviewId, { gateway: gateway(item.snapshot, input => requests.push(input.ruleBatchIndex)) });
+  run = await db('la_reviews').where({ id: item.reviewId }).first();
+  assert.equal(run.status, 'completed'); assert.equal(run.progress, 100); assert.equal(run.coverage.complete, true);
+  assert.deepEqual(requests, [2]);
+  const findings = await db('la_findings').where({ review_id: item.reviewId });
+  assert.equal(findings.length, 6); assert.ok(findings.every(f => f.evidence[0]?.blockId === 'b2'));
+  assert.equal((await db('la_decisions').where({ review_id: item.reviewId })).length, 0);
+});
+
+test('checkpoint reuse never bypasses a changed model snapshot', async () => {
+  const item = await fixture();
+  const store = createReviewBatchStore(db, item.reviewId);
+  await db('la_reviews').where({ id: item.reviewId }).update({ status: 'running' });
+  const document = { blocks: [{ id: 'b1', text: 'English' }, { id: 'b2', text: '款项应在交付后支付。' }] };
+  await gateway(item.snapshot).review(document, rules, [], background, null, store);
+  let calls = 0; const previous = config.model.key; config.model.key = 'changed-fixture-key';
+  try { await assert.rejects(() => gateway(item.snapshot, () => { calls++; }).review(document, rules, [], background, null, store), { code: 'MODEL_SNAPSHOT_CHANGED' }); }
+  finally { config.model.key = previous; }
+  assert.equal(calls, 0);
+});
+
+test('cancellation after a model response cannot checkpoint or complete results', async () => {
+  const item = await fixture(); let cancelled = false;
+  await processReview(db, item.reviewId, { gateway: gateway(item.snapshot, async () => {
+    if (!cancelled) { cancelled = true; await db('la_reviews').where({ id: item.reviewId }).update({ status: 'cancelled' }); }
+  }) });
+  assert.equal((await db('la_reviews').where({ id: item.reviewId }).first()).status, 'cancelled');
+  assert.equal((await db('la_job_steps').where({ review_id: item.reviewId, stage: 'review_checkpoint' })).length, 0);
+  assert.equal((await db('la_findings').where({ review_id: item.reviewId })).length, 0);
+});
+
+test('parallel batches update progress by completed count and keep it monotonic when responses arrive out of order', async () => {
+  const item = await fixture(), progress = [], finished = [];
+  const { setTimeout: delay } = require('node:timers/promises');
+  await processReview(db, item.reviewId, { gateway: gateway(item.snapshot, async input => {
+    await delay(input.ruleBatchIndex === 1 ? 80 : 1);
+    finished.push(input.ruleBatchIndex);
+  }), notify: async (_, event) => { if (event.stage === 'reviewing') progress.push(event.progress); } });
+  assert.deepEqual(finished, [2, 1]);
+  assert.deepEqual(progress, [55, 70, 85]);
+  const run = await db('la_reviews').where({ id: item.reviewId }).first();
+  assert.equal(run.status, 'completed');
+  assert.equal((await db('la_findings').where({ review_id: item.reviewId })).length, rules.length);
+});
+
+test('the real workflow uses a pinned new execution plan after server defaults change', async () => {
+  const http = require('node:http'), previous = { ...config.model }, requests = [];
+  const server = http.createServer(async (req, res) => {
+    const parts = []; for await (const part of req) parts.push(part);
+    const input = JSON.parse(JSON.parse(Buffer.concat(parts).toString()).messages[1].content); requests.push(input);
+    const block = input.blocks.find(b => b.text.includes('款项应在交付后支付。'));
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ checks: input.rules.map(r => ({ ruleId: r.id, status: 'pass', kind: 'clause', severity: 'low', reason: '原文明确', suggestion: '', evidence: [{ blockId: block.id, quote: '款项应在交付后支付。' }], legalRefIds: [] })) }) } }] }));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    Object.assign(config.model, { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, reviewRuleBatchSize: 8 });
+    const item = await fixture();
+    item.snapshot.reviewExecution = require('../../pilot/review-planning').executionSettings();
+    await db('la_reviews').where({ id: item.reviewId }).update({ snapshot: JSON.stringify(item.snapshot) });
+    config.model.reviewRuleBatchSize = 1;
+    await processReview(db, item.reviewId);
+    const run = await db('la_reviews').where({ id: item.reviewId }).first();
+    assert.equal(run.status, 'completed'); assert.equal(run.snapshot.reviewExecution.ruleBatchSize, 8);
+    assert.equal(requests.length, 1); assert.equal(requests[0].rules.length, 6); assert.equal(requests[0].documentScope, 'complete');
+    assert.equal(run.coverage.promptVersion, item.snapshot.reviewExecution.promptVersion);
+  } finally { Object.assign(config.model, previous); await new Promise(resolve => server.close(resolve)); }
+});

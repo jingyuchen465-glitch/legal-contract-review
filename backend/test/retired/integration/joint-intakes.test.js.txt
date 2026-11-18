@@ -1,0 +1,135 @@
+const { test, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const path = require('node:path');
+const supertest = require('supertest');
+const AdmZip = require('adm-zip');
+const jwt = require('jsonwebtoken');
+const { config } = require('../../pilot/config');
+const { createDb } = require('../../pilot/db');
+const { migrate } = require('../../pilot/cli');
+const { createApp } = require('../../pilot/app');
+const { hashPassword } = require('../../pilot/auth');
+const { startBinding, completeBinding } = require('../../pilot/dingtalk-account');
+const { persistEvent, processIntegration } = require('../../pilot/dingtalk');
+const { processPreanalysis } = require('../../pilot/preanalysis');
+const { processReview } = require('../../pilot/workflow');
+const joint = require('../../pilot/joint-intake');
+const { rules: crossRules } = require('../../pilot/joint-review');
+const { processLearning } = require('../../pilot/learning');
+let root, db, database, handle, owner, outsider, csrf, otherCsrf, actor, pack, groups, reviews = [];
+const contents = { main:'虚构采购合同。甲方：虚构甲有限公司。乙方：虚构乙有限公司。付款期限为验收后30日，币种人民币；有效期一年。本合同优先于其他文件。', supplement:'补充协议：修改虚构采购合同付款期限为验收后60日，币种人民币。补充协议优先于原合同。', quote:'报价清单：同一采购总价1000美元，含税；交付期限另行协商。', second:'另一独立采购合同。付款期限为验收后30日。' };
+function docx(text) {const z=new AdmZip();z.addFile('[Content_Types].xml',Buffer.from('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>'));z.addFile('word/document.xml',Buffer.from(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`));for(const e of z.getEntries())e.header.time=new Date(2020,0,1);return z.toBuffer();}
+const files=Object.keys(contents).map((key,i)=>({fileId:key,fileName:i===3?'独立合同.docx':i===2?'报价.docx':'同名协议.docx'}));
+const gateway={
+ classify:async d=>({typeId:'procurement',tags:[],evidence:[{blockId:d.blocks[0].id,quote:d.blocks[0].text}],uncertain:false}),
+ preAnalyze:async d=>({contractType:'采购合同',parties:[{name:'虚构甲有限公司',role:'采购方',label:'甲方',evidence:[]}],reviewPoints:[{title:'核对付款期限',instruction:'明确付款条件',evidence:[]}],corePurposes:['保障付款与交付安排']}),
+ groupDocuments:async profiles=>({groups:[{name:'AI 建议交易组',mainDocumentId:profiles[0].documentId,materials:[]}],excluded:[],notes:'其余附件待确认'}),
+ review:async(d,rules)=>({checks:rules.map(r=>({ruleId:r.id,title:r.title,status:'uncertain',kind:'uncertain',severity:'medium',reason:'待核实交易条件',suggestion:'在付款条款中明确【待双方确认】的付款条件。',evidence:[{blockId:d.blocks[0].id,quote:d.blocks[0].text}],legalRefIds:[]})),coverage:{complete:true,totalRules:rules.length,checkedRules:rules.length}}),
+ jointFacts:async blocks=>({facts:blocks.flatMap(b=>['amendments','amounts_terms','precedence'].map(topic=>({topic,summary:'测试要素',evidence:[{blockId:b.id,quote:b.text}]})))}),
+ jointCompare:async input=>({checks:crossRules.map(r=>({ruleId:r.id,status:'uncertain',kind:'uncertain',severity:'high',reason:'跨文件约定存在差异，生效依据待核实',suggestion:'在双方确认后，于主合同补充适用范围和变更约定。',evidence:input.blocks.map(b=>({blockId:b.id,quote:b.text})),legalRefIds:[]})),relations:['amendments','amounts_terms','precedence'].map(category=>({category,effect:'uncertain',before:input.blocks.slice(0,1).map(b=>({blockId:b.id,quote:b.text})),after:input.blocks.slice(1,2).map(b=>({blockId:b.id,quote:b.text})),basis:[],explanation:'双方原文可核对，但效力关系待确认',applicableText:''})),suggestions:[{versionId:input.documents[0].versionId,text:'补充双方明确确认的适用约定。'}]})
+};
+async function receive(instance, attachments=files, override={}) {const id=await persistEvent(db,{processInstanceId:instance,eventType:'bpms_task_change'},randomUUID(),'fixture-app');await processIntegration(db,id,{detail:async()=>({title:'虚构多附件审批',tasks:[{userId:'fixture-user',status:'NEW',result:'NONE'}],formComponentValues:[{name:'审批附件',value:JSON.stringify(attachments)}]}),attachment:async(_id,file)=>{if(override[file.fileId] instanceof Error)throw override[file.fileId];return docx(override[file.fileId]||contents[file.fileId]||'虚构新附件');}});return db('la_integration_events').where({id}).first();}
+const getIntake=async()=> (await owner.get('/api/dingtalk/intakes/'+pack.id).expect(200)).body;
+const getContract=async id=>(await owner.get('/api/contracts/'+id).expect(200)).body;
+async function analyze(p=pack){const row=await db('la_dingtalk_intakes').where({id:p.id}).first();await joint.analyze(db,p.id,row.analysis_token,{gateway});}
+async function startGroup(g){let c=await getContract(g.contractId);await processPreanalysis(db,c.current_preanalysis_id,{gateway});c=await getContract(g.contractId);const j=c.preanalysis,t=j.result.templates.find(t=>t.id===j.result.templateId);return(await owner.post(`/api/preanalyses/${j.id}/start`).set('X-CSRF-Token',csrf).send({revision:j.revision,contractRevision:c.revision,selection:{partyId:j.result.parties[0].id,typeId:'procurement',templateId:t.id,pointIds:[t.points[0].id],corePurposes:['保障付款和交付']}}).expect(202)).body.reviewId;}
+before(async()=>{
+ root=createDb();database='legal_test_joint_'+randomUUID().replaceAll('-','');await root.raw(`CREATE DATABASE "${database}"`);const url=new URL(config.databaseUrl);url.pathname='/'+database;config.databaseUrl=url.href;config.dataRoot=path.resolve(__dirname,'../../../.local/test-data',database);Object.assign(config.ding,{enabled:true,clientId:'fixture-app',secret:'fixture-secret'});db=createDb();await migrate(db);await require('../../pilot/storage').initializeDirectories();handle=createApp(db);
+ for(const name of ['admin','outsider']){const user={id:randomUUID(),username:name,display_name:name,department:name,roles:[name==='admin'?'admin':'business']};await db('la_users').insert({...user,roles:JSON.stringify(user.roles),password_hash:await hashPassword('fixture-only-password-1234')});const agent=supertest.agent(handle.app),s=await agent.get('/api/auth/session');const login=await agent.post('/api/auth/login').set('X-CSRF-Token',s.body.csrf).send({username:name,password:'fixture-only-password-1234'}).expect(200);if(name==='admin'){owner=agent;csrf=login.body.csrf;actor=user;}else{outsider=agent;otherCsrf=login.body.csrf;}}
+ const request=new URL((await startBinding(db,actor)).url);await completeBinding(db,actor,{code:'fixture',state:request.searchParams.get('state')},{resolve:async()=>({userId:'fixture-user',displayName:'虚构收件人'})});
+});
+after(async()=>{await handle?.close();await db?.destroy();if(root&&database){await root.raw('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ? AND pid <> pg_backend_pid()',[database]);await root.raw(`DROP DATABASE "${database}"`);}await root?.destroy();});
+
+test('flag is off by default; legacy approvals and later attachments stay legacy after enabling',async()=>{
+ assert.equal((await joint.settings(db)).enabled,false);await receive('legacy',[files[0]]);assert.equal((await db('la_dingtalk_intakes')).length,0);
+ await owner.put('/api/dingtalk/intake-settings').send({enabled:true,updatedAt:null}).expect(403);
+ const setting=(await owner.put('/api/dingtalk/intake-settings').set('X-CSRF-Token',csrf).send({enabled:true,updatedAt:null}).expect(200)).body;assert.equal(setting.enabled,true);
+ await owner.put('/api/dingtalk/intake-settings').set('X-CSRF-Token',csrf).send({enabled:false,updatedAt:null}).expect(409);
+ await owner.put('/api/dingtalk/intake-settings').set('X-CSRF-Token',csrf).send({enabled:true,updatedAt:setting.updatedAt}).expect(200);
+ await receive('legacy',files.slice(0,2));assert.equal((await db('la_dingtalk_intakes')).length,0);
+});
+test('new approval collects every attachment once, including unsupported and failed files; raw files cannot bypass confirmation',async()=>{
+ const event=await receive('new-approval',[...files,{fileId:'bad',fileName:'损坏.docx'},{fileId:'zip',fileName:'附件.zip'}],{bad:new Error('fixture download failure')});assert.equal(event.summary.collected,4);assert.equal(event.summary.failed,1);
+ pack=await db('la_dingtalk_intakes').where({instance_id:'new-approval'}).first();let p=await getIntake();assert.equal(p.documents.length,6);assert.equal(p.documents.filter(d=>d.filename==='同名协议.docx').length,2);assert.equal(p.documents.find(d=>d.file_id==='bad').status,'failed');assert.equal(p.documents.find(d=>d.file_id==='zip').status,'unsupported');
+ const ids=p.documents.map(d=>d.contract_id).filter(Boolean);assert.equal((await db('la_preanalyses').whereIn('contract_id',ids)).length,0);assert.equal((await db('la_reviews').whereIn('contract_id',ids)).length,0);
+ const list=(await owner.get('/api/contracts?view=main&page=1').expect(200)).body.items;assert.ok(list.some(c=>c.entryType==='dingtalk_intake'));assert.ok(!list.some(c=>ids.includes(c.id)));
+ for(const id of [pack.container_id,...ids]){const c=await getContract(id);await owner.post('/api/reviews').set('X-CSRF-Token',csrf).send({contractId:id,revision:c.revision}).expect(409);}
+ await outsider.get('/api/dingtalk/intakes/'+pack.id).expect(404);assert.equal((await outsider.get('/api/dingtalk/intakes').expect(200)).body.length,0);
+ await outsider.post('/api/dingtalk/intakes/'+pack.id+'/confirm').set('X-CSRF-Token',otherCsrf).send({revision:p.revision,selection:{groups:[]}}).expect(403);
+});
+test('background parsing suggests groups; confirmation requires explicit assignment/exclusion and concurrency protection',async()=>{
+ await analyze();let p=await getIntake();assert.equal(p.status,'ready');assert.equal(p.analysis.groups.length,1);assert.equal(p.documents.filter(d=>d.version?.parsed?.blocks.length).length,4);
+ const by=key=>p.documents.find(d=>d.file_id===key).id;const selection={groups:[{name:'采购及补充协议',mainDocumentId:by('main'),materials:[{documentId:by('supplement'),role:'supplement'},{documentId:by('quote'),role:'schedule'}]},{name:'独立采购',mainDocumentId:by('second'),materials:[{documentId:by('quote'),role:'reference'}]}],excluded:[{documentId:by('bad'),reason:'已核实为无关材料，下载失败'},{documentId:by('zip'),reason:'压缩包与本次交易无关'}]};
+ await owner.post(`/api/dingtalk/intakes/${p.id}/confirm`).set('X-CSRF-Token',csrf).send({revision:p.revision,selection:{...selection,excluded:[]}}).expect(400);
+ await owner.put(`/api/dingtalk/intakes/${p.id}/groups`).set('X-CSRF-Token',csrf).send({revision:p.revision,selection}).expect(200);
+ await owner.post(`/api/dingtalk/intakes/${p.id}/confirm`).set('X-CSRF-Token',csrf).send({revision:p.revision,selection}).expect(409);p=await getIntake();
+ groups=(await owner.post(`/api/dingtalk/intakes/${p.id}/confirm`).set('X-CSRF-Token',csrf).send({revision:p.revision,selection}).expect(200)).body.groups;assert.equal(groups.length,2);
+ p=await getIntake();await owner.post(`/api/dingtalk/intakes/${p.id}/confirm`).set('X-CSRF-Token',csrf).send({revision:p.revision,selection}).expect(200);assert.equal((await db('la_review_groups').where({intake_id:p.id})).length,2);assert.equal((await db('la_preanalyses').whereIn('contract_id',groups.map(g=>g.contractId))).length,2);
+});
+test('each group reviews independently, all three cross-file outputs carry exact versioned evidence and file-scoped Word comments',async()=>{
+ for(const g of groups)reviews.push(await startGroup(g));
+ await processReview(db,reviews[0],{gateway});let r=(await owner.get('/api/reviews/'+reviews[0]).expect(200)).body;assert.equal(r.status,'completed');assert.equal(r.documents.length,3);assert.equal(r.coverage.crossDocument.batches,3);assert.equal(r.coverage.documents.length,3);assert.equal(new Set(r.snapshot.jointRelations.map(x=>x.category)).size,3);
+ for(const f of r.findings)for(const e of f.evidence){assert.ok(e.versionId);const v=await db('la_versions').where({id:e.versionId}).first();assert.ok(v.parsed.blocks.some(b=>b.id===e.blockId&&b.text.includes(e.quote)));}
+ const entry=r.documents.find(d=>d.role==='supplement');const annotated=await owner.get(`/api/reviews/${r.id}/annotated-contract?versionId=${entry.versionId}`).buffer(true).parse((response,done)=>{const parts=[];response.on('data',p=>parts.push(p));response.on('end',()=>done(null,Buffer.concat(parts)));}).expect(200);const zip=new AdmZip(annotated.body);assert.ok(zip.getEntry('word/comments.xml'));assert.ok(!zip.readAsText('word/comments.xml').includes(contents.quote));
+ const report=await owner.get(`/api/reviews/${r.id}/report`).expect(200);assert.ok(report.text.includes(entry.versionId));assert.ok(report.text.includes('联合审查三类对照'));await owner.get(`/api/reviews/${r.id}/report?format=docx`).expect(200);
+ await owner.post(`/api/reviews/${r.id}/findings`).set('X-CSRF-Token',csrf).send({title:'人工核实补充协议',reason:'已核对',suggestion:'明确适用范围',severity:'medium',evidence:[{versionId:entry.versionId,blockId:entry.version.parsed.blocks[0].id,quote:entry.version.parsed.blocks[0].text}]}).expect(201);
+ await owner.post(`/api/reviews/${r.id}/findings`).set('X-CSRF-Token',csrf).send({title:'非法跨组引用',reason:'测试',severity:'medium',evidence:[{versionId:randomUUID(),blockId:'p1',quote:'不存在'}]}).expect(404);
+ await processReview(db,reviews[1],{gateway:{...gateway,jointFacts:async()=>{throw Object.assign(new Error('fixture model failure'),{status:422,code:'FIXTURE_FAILURE'});}}});assert.equal((await db('la_reviews').where({id:reviews[1]}).first()).status,'waiting_input');assert.equal((await db('la_reviews').where({id:reviews[0]}).first()).status,'completed');
+ await processReview(db,reviews[1],{gateway});assert.equal((await db('la_reviews').where({id:reviews[1]}).first()).status,'completed');
+});
+test('conclusion pins the full manifest; learning uses same-file ancestors and multi-file human evidence',async()=>{
+ const r=(await owner.get('/api/reviews/'+reviews[0]).expect(200)).body;
+ await db('la_settings').insert({key:'contract_learning',value:JSON.stringify({enabled:true})});
+ for(const f of r.findings.filter(f=>!f.disposition))await owner.put(`/api/reviews/${r.id}/findings/${f.id}/disposition`).set('X-CSRF-Token',csrf).send({revision:f.revision,action:'acknowledge',reason:'已核对双方文件，约定需签署确认后适用'}).expect(200);
+ const c=await getContract(r.contract_id);const decision=(await owner.post(`/api/reviews/${r.id}/decision`).set('X-CSRF-Token',csrf).send({revision:c.revision,outcome:'conditional',conditions:'补签双方一致的适用约定'}).expect(201)).body;assert.equal(decision.materials_snapshot.documents.length,3);
+ const task=await db('la_learning_tasks').where({decision_id:decision.id}).first();let evidenceVersions=new Set();await processLearning(db,task.id,{gateway:{distill:async input=>{for(const b of input.blocks)evidenceVersions.add(b.versionId);return[];}}});const learned=await db('la_learning_tasks').where({id:task.id}).first();assert.equal(learned.status,'no_change');assert.equal(learned.source.documentPairs.length,3);assert.ok(learned.source.documentPairs.every(p=>!p.previous));assert.equal(evidenceVersions.size,3);assert.ok(learned.source.findings.some(f=>new Set(f.evidence.map(e=>e.versionId)).size>1));
+});
+test('shared material upload invalidates all groups, keeps historical conclusions, and remote duplicates cannot overwrite local revisions',async()=>{
+ let p=await getIntake();const quote=p.documents.find(d=>d.file_id==='quote'),c=await getContract(quote.contract_id),old=c.current_version_id;
+ await owner.post(`/contracts/${c.id}/versions`).expect(404);
+ await owner.post(`/api/contracts/${c.id}/versions`).set('X-CSRF-Token',csrf).field('revision',c.revision).attach('file',docx('本机修改后的报价：币种人民币，金额1000元。'),'本机修改报价.docx').expect(201);
+ const changed=await getContract(c.id);assert.notEqual(changed.current_version_id,old);
+ for(const g of groups){const main=await getContract(g.contractId);assert.equal(main.current_review_id,null);assert.ok(main.current_preanalysis_id);}
+ assert.equal((await owner.get('/api/reviews/'+reviews[0]).expect(200)).body.isCurrent,false);assert.equal((await db('la_decisions').where({review_id:reviews[0]})).length,1);
+ await receive('new-approval',[...files,{fileId:'bad',fileName:'损坏.docx'},{fileId:'zip',fileName:'附件.zip'}],{bad:new Error('fixture')});assert.equal((await getContract(c.id)).current_version_id,changed.current_version_id);assert.equal((await db('la_review_groups').where({intake_id:pack.id})).length,2);
+ const main=await getContract(groups[0].contractId);await owner.post(`/api/reviews/${reviews[0]}/decision`).set('X-CSRF-Token',csrf).send({revision:main.revision,outcome:'agree'}).expect(409);
+});
+test('multi-file experience can be edited, adopted, published and frozen into a subsequent review',async()=>{
+ let task=await db('la_learning_tasks').where({review_id:reviews[0]}).first();await owner.post(`/api/learning-tasks/${task.id}/retry`).set('X-CSRF-Token',csrf).send({revision:task.revision}).expect(200);
+ let made=false;await processLearning(db,task.id,{gateway:{distill:async input=>{const versions=[...new Set(input.blocks.map(b=>b.versionId))];if(made||versions.length<2)return[];made=true;return[{key:'joint-payment',kind:'skill',scope:'type',title:'跨文件付款条件核查',reason:'依据人工确认的文件间冲突处理',method:'分别核对主协议与关联材料的付款起算条件、币种和适用依据；存在冲突先要求双方澄清。',evidence:versions.slice(0,2).map(id=>{const b=input.blocks.find(b=>b.versionId===id);return{versionId:id,blockId:b.sourceBlockId,quote:b.text};}),findingIds:input.findings.filter(f=>f.disposition).slice(0,1).map(f=>f.id)}];}}});task=await db('la_learning_tasks').where({id:task.id}).first();assert.equal(task.status,'awaiting_confirmation');assert.equal(task.proposals[0].evidence.length,2);
+ const proposal=task.proposals[0];await owner.put(`/api/learning-tasks/${task.id}/proposals/${proposal.id}`).set('X-CSRF-Token',csrf).send({revision:task.revision,method:proposal.method+' 不按文件名称或上传顺序推断效力。'}).expect(200);task=await db('la_learning_tasks').where({id:task.id}).first();const adopted=(await owner.post(`/api/learning-tasks/${task.id}/proposals/${proposal.id}/adopt`).set('X-CSRF-Token',csrf).send({revision:task.revision}).expect(200)).body;
+ const draft=await db('la_skill_versions').where({id:adopted.draftVersionId}).first();assert.equal(draft.sources[0].materials.length,3);await owner.post(`/api/skill-pack-versions/${draft.id}/submit`).set('X-CSRF-Token',csrf).send({revision:draft.revision}).expect(200);await owner.post(`/api/skill-pack-versions/${draft.id}/publish`).set('X-CSRF-Token',csrf).send({revision:draft.revision+1}).expect(200);
+ // Restore a confirmed material assignment after the preceding shared-file upload.
+ let p=await getIntake();await analyze();p=await getIntake();const selection=p.draft;const confirmed=await joint.confirm(db,actor,p.id,p.revision,selection);const c=await db('la_contracts').where({id:confirmed[0].contractId}).first();const id=await db.transaction(trx=>require('../../pilot/workflow').enqueueReview(trx,c,actor.id));const next=await db('la_reviews').where({id}).first();assert.ok(next.snapshot.publishedSkillPacks.some(s=>s.id===draft.id));
+});
+test('new or missing attachments require fresh assignment; failed files can be replaced, stale preanalysis is rejected, and interrupted analysis recovers',async()=>{
+ let p=await getIntake();const failed=p.documents.find(d=>d.file_id==='bad');await owner.post(`/api/dingtalk/intakes/${p.id}/documents/${failed.id}/file`).set('X-CSRF-Token',csrf).field('revision',p.revision).attach('file',docx('人工补传的虚构参考材料'),'补传材料.docx').expect(201);
+ await receive('new-approval',[...files,{fileId:'added',fileName:'新增补充条款.docx'}]);p=await getIntake();assert.equal(p.documents.find(d=>d.file_id==='bad').present,false);assert.equal(p.documents.find(d=>d.file_id==='added').status,'collected');assert.notEqual(p.status,'confirmed');
+ const c=await getContract(groups[0].contractId);await owner.post(`/api/contracts/${c.id}/preanalysis`).set('X-CSRF-Token',csrf).send({revision:c.revision}).expect(409);
+ await db('la_dingtalk_intakes').where({id:p.id}).update({status:'analyzing'});await joint.recoverInterrupted(db);assert.equal((await getIntake()).status,'queued');await analyze();assert.equal((await getIntake()).status,'ready');
+});
+test('manual additions require assignment and survive remote refresh; local versions are compared only to their own parents',async()=>{
+ let p=await getIntake();const added=(await owner.post(`/api/dingtalk/intakes/${p.id}/documents`).set('X-CSRF-Token',csrf).field('revision',p.revision).attach('file',docx('人工补充的履约清单'),'履约清单.docx').expect(201)).body;
+ await receive('new-approval',files);p=await getIntake();assert.equal(p.documents.find(d=>d.id===added.documentId).present,true);await analyze();p=await getIntake();const by=key=>p.documents.find(d=>d.file_id===key).id;const group={name:'重新确认的采购组',mainDocumentId:by('main'),materials:[{documentId:by('supplement'),role:'supplement'},{documentId:by('quote'),role:'schedule'},{documentId:added.documentId,role:'reference'}]};const used=new Set([group.mainDocumentId,...group.materials.map(m=>m.documentId)]);const confirmed=await joint.confirm(db,actor,p.id,p.revision,{groups:[group],excluded:p.documents.filter(d=>!used.has(d.id)).map(d=>({documentId:d.id,reason:'人工确认不属于本组'}))});
+ const id=await startGroup(confirmed[0]);await processReview(db,id,{gateway});const run=await db('la_reviews').where({id}).first();const decision={id:randomUUID(),review_id:id,version_id:run.version_id,decided_by:actor.id,outcome:'conditional',conditions:'落实已核实事项',materials_snapshot:JSON.stringify(run.snapshot.jointGroup)};await db('la_decisions').insert(decision);const c=await db('la_contracts').where({id:run.contract_id}).first();const taskId=await require('../../pilot/learning').enqueueLearning(db,c,run,decision,actor);const task=await db('la_learning_tasks').where({id:taskId}).first();const source=await require('../../pilot/learning').buildSource(db,task);const quote=source.documentPairs.find(d=>d.role==='schedule');assert.ok(quote.previous);const curr=await db('la_versions').where({id:quote.current.id}).first(),prev=await db('la_versions').where({id:quote.previous.id}).first();assert.equal(curr.contract_id,prev.contract_id);assert.equal(curr.parent_id,prev.id);assert.ok(source.documentPairs.filter(d=>d.role==='main'||d.role==='supplement').every(d=>!d.previous));
+});
+test('long joint documents are fully chunked and every file pair has explicit coverage',async()=>{
+ const long='甲'.repeat(25000)+'付款期限30日。';await receive('long-approval',files.slice(0,2),{main:long});const intake=await db('la_dingtalk_intakes').where({instance_id:'long-approval'}).first();await analyze(intake);let d=await joint.detail(db,actor,intake.id);const main=d.documents.find(d=>d.file_id==='main'),supp=d.documents.find(d=>d.file_id==='supplement');const gs=await joint.confirm(db,actor,intake.id,d.revision,{groups:[{name:'长文完整核对',mainDocumentId:main.id,materials:[{documentId:supp.id,role:'supplement'}]}],excluded:[]});const id=await startGroup(gs[0]);let chars=0;await processReview(db,id,{gateway:{...gateway,jointFacts:async blocks=>{chars+=blocks.reduce((n,b)=>n+b.text.length,0);return gateway.jointFacts(blocks);}}});const run=await db('la_reviews').where({id}).first();assert.equal(run.status,'completed');assert.ok(chars>=long.length+contents.supplement.length);assert.ok(run.coverage.crossDocument.facts.find(f=>f.versionId===main.version.id).chunks>=3);assert.ok(run.coverage.crossDocument.pairs[0].batches>=5);
+});
+
+test('assigned counsel can open related materials across departments, but cannot cross approval boundaries',async()=>{
+ const lawyer={id:randomUUID(),username:'assigned-lawyer',display_name:'跨部门承办法务',department:'independent-legal',roles:['legal']};
+ await db('la_users').insert({...lawyer,roles:JSON.stringify(lawyer.roles),password_hash:await hashPassword('fixture-only-password-1234')});
+ const agent=supertest.agent(handle.app),session=await agent.get('/api/auth/session');
+ await agent.post('/api/auth/login').set('X-CSRF-Token',session.body.csrf).send({username:lawyer.username,password:'fixture-only-password-1234'}).expect(200);
+ const g=await db('la_review_groups').where({intake_id:pack.id,active:true}).first(),main=await db('la_intake_documents').where({id:g.main_document_id}).first();
+ await db('la_contracts').where({id:main.contract_id}).update({reviewer_id:lawyer.id});
+ const p=(await agent.get('/api/dingtalk/intakes/'+pack.id).expect(200)).body;
+ const support=p.documents.find(d=>d.file_id==='supplement');await agent.get('/api/contracts/'+support.contract_id).expect(200);
+ const other=await db('la_dingtalk_intakes').where({instance_id:'long-approval'}).first();
+ await agent.get('/api/dingtalk/intakes/'+other.id).expect(404);
+ await db('la_review_groups').where({id:g.id}).update({active:false});
+ await agent.get('/api/dingtalk/intakes/'+pack.id).expect(404);
+ await db('la_review_groups').where({id:g.id}).update({active:true});
+});

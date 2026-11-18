@@ -15,11 +15,10 @@ async function main() {
       if (!password) throw new Error('请在环境中设置 BOOTSTRAP_PASSWORD（至少12位），不会生成默认密码');
       if (!(await db('la_users').where({ username }).first())) {
         const user = { id: randomUUID(), username, display_name: process.env.BOOTSTRAP_NAME || '系统管理员', password_hash: await hashPassword(password), roles: JSON.stringify(['admin']), department: '' };
-        await db('la_users').insert(user); await audit(db, user, 'user.bootstrap', user.id); console.log('管理员已创建，可直接提交合同、复核、维护规则和发布');
+        await db('la_users').insert(user); await audit(db, user, 'user.bootstrap', user.id); console.log('管理员已创建，可直接提交合同和复核');
       } else console.log('账号已存在，未覆盖密码或角色');
-      await seedDrafts(db); await seedCatalogDrafts(db);
     } else if (process.argv[2] === 'demo') {
-      await seedDrafts(db); await seedCatalogDrafts(db); console.log('已建立全部合同类型的规则草稿，尚未发布。请法务核实后逐包提交审核并发布。');
+      await seedDrafts(db); await seedCatalogDrafts(db); console.log('已建立高级标准配置示例草稿；日常预审可直接使用内置审查要点，无需发布这些草稿。');
     } else console.log('数据库迁移完成，已有数据保留');
   } finally { await db.destroy(); }
 }

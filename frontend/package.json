@@ -8,13 +8,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "pdfjs-dist": "6.4.299",
     "@fingerprintjs/fingerprintjs": "^4.4.1",
     "@onlyoffice/document-editor-vue": "^1.6.1",
     "axios": "^1.7.2",
     "element-plus": "^2.10.1",
     "marked": "^18.0.0",
+    "pdfjs-dist": "6.4.299",
     "socket.io-client": "^4.8.3",
+    "superdoc": "2.30.0",
     "uuid": "^13.0.0",
     "vue": "^3.2.13",
     "vue-router": "^4.0.3"

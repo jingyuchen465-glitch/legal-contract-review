@@ -5,6 +5,6 @@ const catalog = [
   { id: 'software', name: '软件许可合同', types: [ ['software_license', '软件许可合同'] ] },
   { id: 'other', name: '其他', types: [ ['other', '其他'] ] },
 ].map(c => ({ ...c, types: c.types.map(([id, name, pilot = false]) => ({ id, name, pilot })) }));
-const tags = ['开模', '模具归属', '肖像许可', '知识产权', '清关', '运输', '数据处理', '境外法律'];
+const tags = ['开模', '模具归属', '肖像许可', '知识产权', '清关', '运输', '数据处理', '境外法律', '仓储服务', '场地租赁', '转租'];
 function findType(id) { for (const c of catalog) { const t = c.types.find(t => t.id === id); if (t) return { ...t, categoryId: c.id, categoryName: c.name }; } return null; }
-module.exports = { catalog, tags, findType, catalogVersion: '2026-10-31.1' };
+module.exports = { catalog, tags, findType, catalogVersion: '2026-11-05.2' };

@@ -1,0 +1,39 @@
+const { config } = require('./config');
+
+function concurrency(value = config.model.reviewConcurrency) {
+  return Number.isInteger(Number(value)) && Number(value) > 0 ? Math.min(Number(value), 8) : 3;
+}
+
+// One shared budget per worker process, including retries and separate reviews.
+let active = 0;
+const waiting = [];
+function dispatch() {
+  while (active < concurrency() && waiting.length) {
+    active++;
+    waiting.shift()();
+  }
+}
+async function withReviewSlot(fn) {
+  await new Promise(resolve => { waiting.push(resolve); dispatch(); });
+  try { return await fn(); }
+  finally { active--; dispatch(); }
+}
+
+async function runBatches(items, limit, execute) {
+  const results = new Array(items.length);
+  let next = 0, failure;
+  const assertContinuing = () => { if (failure) throw failure; };
+  const worker = async () => {
+    while (!failure && next < items.length) {
+      const index = next++;
+      try { results[index] = await execute(items[index], index, assertContinuing); }
+      catch (error) { failure ||= error; }
+    }
+  };
+  // Drain already started work before the workflow records failure or retries.
+  await Promise.all(Array.from({ length: Math.min(concurrency(limit), items.length) }, worker));
+  if (failure) throw failure;
+  return results;
+}
+
+module.exports = { concurrency, withReviewSlot, runBatches };

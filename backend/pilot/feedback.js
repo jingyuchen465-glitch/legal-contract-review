@@ -105,27 +105,10 @@ async function samplePreview(db, user, id) {
 const sampleExpected = z.object({ typeId: z.string(), tags: z.array(z.enum(tags)), riskRuleIds: z.array(z.string()), highRiskRuleIds: z.array(z.string()), background: z.object({ ourEntity: z.string(), perspective: z.string(), purpose: z.string() }) });
 function mountFeedbackRoutes(r, db) {
   r.use('/feedback-cases/:id', requireRole('legal', 'publisher'));
-  r.post('/feedback-cases/:id/rule-draft', wrap(async (req, res) => res.status(201).json(await makeRuleDraft(db, req.user, req.params.id, z.object({ packId: z.string().optional() }).parse(req.body || {})))));
-  r.post('/feedback-cases/:id/knowledge-draft', wrap(async (req, res) => res.status(201).json(await makeRuleDraft(db, req.user, req.params.id, z.object({ packId: z.string().optional() }).parse(req.body || {}), true))));
   r.get('/feedback-cases/:id/context', wrap(async (req, res) => {
     const f = await feedbackRow(db, req.params.id), ctx = await context(db, req.user, f);
     res.json({ feedback: f, contract: { id: ctx.contract.id, title: ctx.contract.title }, version: { id: ctx.version.id, version_no: ctx.version.version_no }, finding: ctx.finding || null, submittedBy: (await db('la_users').where({ id: f.created_by }).first())?.display_name });
   }));
   r.get('/feedback-cases/:id/evaluation-preview', wrap(async (req, res) => res.json(await samplePreview(db, req.user, req.params.id))));
-  r.post('/feedback-cases/:id/evaluation-case', wrap(async (req, res) => {
-    const input = z.object({ name: z.string().trim().min(1), split: z.enum(['development', 'holdout']), expected: sampleExpected, confirmed: z.literal(true) }).parse(req.body);
-    const preview = await samplePreview(db, req.user, req.params.id);
-    if (!findType(input.expected.typeId)) fail(400, 'UNKNOWN_TYPE', '请确认正确的合同类型');
-    const rules = new Set(preview.rules.map(r => r.id));
-    if (input.expected.riskRuleIds.some(id => !rules.has(id)) || input.expected.highRiskRuleIds.some(id => !input.expected.riskRuleIds.includes(id))) fail(400, 'INVALID_EXPECTED_RULE', '高风险项必须属于预期风险，且规则必须存在');
-    const row = await db.transaction(async trx => {
-      const f = await feedbackRow(trx, req.params.id, true);
-      const existing = await trx('la_evaluation_cases').where({ source_feedback_id: f.id }).first();
-      if (existing) return existing;
-      const result = (await trx('la_evaluation_cases').insert({ id: randomUUID(), name: input.name, split: input.split, expected: JSON.stringify(input.expected), document: JSON.stringify(preview.document), created_by: req.user.id, source_feedback_id: f.id }).returning('*'))[0];
-      await audit(trx, req.user, 'feedback.evaluation-case', f.id, { evaluationCaseId: result.id });
-      return result;
-    }); res.status(201).json(row);
-  }));
 }
 module.exports = { mountFeedbackRoutes, context, feedbackRow, samplePreview };
