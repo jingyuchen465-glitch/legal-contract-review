@@ -1,0 +1,2 @@
+exports.up=async db=>{await db.schema.createTable('la_returns',t=>{t.uuid('id').primary();t.uuid('review_id').notNullable().references('id').inTable('la_reviews');t.uuid('version_id').notNullable().references('id').inTable('la_versions');t.uuid('created_by').notNullable().references('id').inTable('la_users');t.text('reason').notNullable();t.timestamp('created_at').defaultTo(db.fn.now());});};
+exports.down=async()=>{throw new Error('请从备份恢复');};

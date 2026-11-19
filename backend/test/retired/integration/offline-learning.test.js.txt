@@ -1,0 +1,85 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const path = require('node:path');
+const supertest = require('supertest');
+const AdmZip = require('adm-zip');
+const { config } = require('../../pilot/config');
+const { createDb } = require('../../pilot/db');
+const { migrate } = require('../../pilot/cli');
+const { createApp } = require('../../pilot/app');
+const { hashPassword } = require('../../pilot/auth');
+const { processPreanalysis } = require('../../pilot/preanalysis');
+const { processReview, enqueueReview } = require('../../pilot/workflow');
+const { processLearning, buildSource } = require('../../pilot/learning');
+const storage = require('../../pilot/storage');
+const docx = text => { const zip = new AdmZip(); zip.addFile('word/document.xml', Buffer.from(`<w:document xmlns:w="urn:word"><w:body><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:body></w:document>`)); return zip.toBuffer(); };
+
+test('download, edit locally, upload same contract, finalize, learn both versions, publish and reuse skill without old human dispositions', async () => {
+  const root = createDb(), database = 'legal_test_offline_' + randomUUID().replaceAll('-', ''); let db, handle;
+  try {
+    await root.raw(`CREATE DATABASE "${database}"`); const url = new URL(config.databaseUrl); url.pathname = '/' + database; config.databaseUrl = url.href;
+    config.dataRoot = path.resolve(__dirname, '../../../.local/test-data', database); db = createDb(); await migrate(db); await storage.initializeDirectories(); handle = createApp(db);
+    const user = randomUUID(), password = 'fixture-only-password-123';
+    await db('la_users').insert({ id: user, username: 'offline-admin', display_name: '工程测试', roles: '["admin"]', password_hash: await hashPassword(password) });
+    const agent = supertest.agent(handle.app), session = await agent.get('/api/auth/session');
+    const login = await agent.post('/api/auth/login').set('X-CSRF-Token', session.body.csrf).send({ username: 'offline-admin', password }).expect(200), csrf = login.body.csrf;
+    const call = (method, route, body) => agent[method]('/api' + route).set('X-CSRF-Token', csrf).send(body);
+    await call('put', '/learning-settings', { enabled: true, updatedAt: null }).expect(200);
+    const oldText = '设备采购合同：收到货物后立即付款。', newText = '设备采购合同：验收合格后30日内付款。';
+    const oldBytes = docx(oldText), newBytes = docx(newText);
+    const original = (await agent.post('/api/contracts/upload').set('X-CSRF-Token', csrf).field('reviewFlow', 'guided').attach('file', oldBytes, '本机合同.docx').expect(201)).body;
+    const download = await agent.get(`/api/files/${original.version.id}?download=1`).buffer(true).parse((res, done) => { const parts = []; res.on('data', p => parts.push(p)); res.on('end', () => done(null, Buffer.concat(parts))); }).expect(200);
+    assert.deepEqual(download.body, oldBytes);
+    let c = (await call('get', `/contracts/${original.contract.id}`).expect(200)).body;
+    const uploaded = (await agent.post(`/api/contracts/${c.id}/versions`).set('X-CSRF-Token', csrf).field('revision', c.revision).field('kind', 'contract').attach('file', newBytes, '本机合同.docx').expect(201)).body;
+    assert.equal(uploaded.version.parent_id, original.version.id);
+    const gateway = {
+      classify: async () => ({ typeId: 'procurement', tags: [], evidence: [], uncertain: false }),
+      preAnalyze: async () => ({ contractType: '设备采购合同', parties: [], reviewPoints: [], corePurposes: ['确保验收后付款'] }),
+      review: async (d, rules) => ({ checks: rules.map(r => ({ ruleId: r.id, title: r.title, status: 'pass', kind: 'clause', severity: 'low', reason: '工程测试', suggestion: '', evidence: [{ blockId: d.blocks[0].id, quote: d.blocks[0].text }], legalRefIds: [] })), coverage: { complete: true, totalRules: rules.length, checkedRules: rules.length } }),
+    };
+    await processPreanalysis(db, uploaded.preanalysisId, { gateway }); c = (await call('get', `/contracts/${c.id}`).expect(200)).body;
+    const template = c.preanalysis.result.templates.find(t => t.id === c.preanalysis.result.templateId);
+    const started = (await call('post', `/preanalyses/${c.preanalysis.id}/start`, { revision: c.preanalysis.revision, contractRevision: c.revision, selection: { partyId: 'custom', customParty: { name: '工程采购方', role: '采购方' }, typeId: 'procurement', templateId: template.id, pointIds: [template.points[0].id], corePurposes: ['确保验收后付款'] } }).expect(202)).body;
+    await processReview(db, started.reviewId, { gateway }); c = (await call('get', `/contracts/${c.id}`).expect(200)).body;
+    await call('post', `/reviews/${started.reviewId}/decision`, { revision: c.revision, outcome: 'agree', reason: '本机修改稿已核实' }).expect(201);
+    const task = await db('la_learning_tasks').where({ review_id: started.reviewId }).first(); let calls = 0;
+    await processLearning(db, task.id, { gateway: { distill: async input => {
+      calls++; assert.equal(input.comparison, 'previous_version'); assert.ok(input.blocks.some(b => b.side === 'previous' && b.text === oldText)); assert.ok(input.blocks.some(b => b.side === 'confirmed' && b.text === newText)); assert.equal(input.findings.length, 0);
+      return [{ key: 'payment', kind: 'skill', scope: 'type', title: '验收与付款的先后核对', reason: '付款触发条件发生变化，修改原因待确认。', method: '结合验收条款核对付款触发条件，避免将收到货物直接等同于验收合格。', conditions: ['采购合同中约定验收'], exclusions: [], examples: ['【我方】验收合格后【待确认期限】内付款。'], evidence: input.blocks.map(b => ({ versionId: b.versionId, blockId: b.sourceBlockId, quote: b.text })), findingIds: [], dependsOn: [] }];
+    } } });
+    assert.equal(calls, 1); let saved = await db('la_learning_tasks').where({ id: task.id }).first(); assert.equal(saved.status, 'awaiting_confirmation');
+    assert.equal(saved.source.comparisonSummary.modified, 1); assert.equal((await db('la_versions').where({ id: original.version.id }).first()).sha256, storage.sha256(oldBytes));
+    const changes = (await call('get', `/learning-tasks/${task.id}/changes`).expect(200)).body; assert.equal(changes.items[0].before[0].text, oldText); assert.equal(changes.items[0].after[0].text, newText);
+    const adopted = (await call('post', `/learning-tasks/${task.id}/proposals/${saved.proposals[0].id}/adopt`, { revision: saved.revision }).expect(200)).body;
+    const draft = await db('la_skill_versions').where({ id: adopted.draftVersionId }).first();
+    await call('post', `/skill-pack-versions/${draft.id}/submit`, { revision: draft.revision }).expect(200);
+    await call('post', `/skill-pack-versions/${draft.id}/publish`, { revision: draft.revision + 1 }).expect(200);
+    c = await db('la_contracts').where({ id: c.id }).first(); const next = await db.transaction(trx => enqueueReview(trx, c, user)); let used;
+    await processReview(db, next, { gateway: { ...gateway, review: async (...args) => { used = args[6]; return gateway.review(...args); } } });
+    assert.ok(used.some(p => p.id === draft.id));
+    // A never-parsed legacy Word baseline goes through the existing converter.
+    const legacyId = randomUUID(), legacyBytes = Buffer.from('{\\rtf1 legacy contract}');
+    const legacyKey = await storage.put(legacyBytes, c.id, legacyId, 'legacy.doc');
+    await db('la_versions').insert({ id: legacyId, contract_id: c.id, version_no: 0, kind: 'contract', filename: 'legacy.doc', storage_key: legacyKey, sha256: storage.sha256(legacyBytes), size: legacyBytes.length, media_type: 'application/msword', source_action: 'upload' });
+    await db('la_versions').where({ id: uploaded.version.id }).update({ parent_id: legacyId });
+    let conversions = 0;
+    const legacySource = await buildSource(db, task, { convert: async (bytes, filename) => {
+      conversions++; assert.deepEqual(bytes, legacyBytes); assert.equal(filename, 'legacy.doc');
+      const zip = new AdmZip(); zip.addFile('manifest.json', Buffer.from(JSON.stringify({ version: 1, sourceExtension: '.doc', notes: [], warnings: [], document: null }))); zip.addFile('preview.pdf', Buffer.from('%PDF-1.4\n% fixture')); zip.addFile('document.docx', oldBytes); return zip.toBuffer();
+    } });
+    assert.equal(conversions, 1); assert.equal(legacySource.documents[1].blocks[0].text, oldText);
+    assert.equal((await db('la_versions').where({ id: legacyId }).first()).conversion.status, 'completed');
+    // Cross-contract parent IDs never become comparison or learning evidence.
+    const foreign = randomUUID(); await db('la_contracts').insert({ id: foreign, number: 'FOREIGN-' + foreign, title: '无关合同', background: '{}' });
+    const foreignVersion = randomUUID(); await db('la_versions').insert({ id: foreignVersion, contract_id: foreign, version_no: 1, kind: 'contract', filename: 'foreign.docx', sha256: 'b'.repeat(64), storage_key: 'unused', media_type: 'application/docx', size: 1, source_action: 'fixture', parsed: JSON.stringify({ blocks: [{ id: 'secret', text: '无关合同不应进入经验' }] }) });
+    await db('la_versions').where({ id: uploaded.version.id }).update({ parent_id: foreignVersion });
+    const source = await buildSource(db, task); assert.equal(source.comparison, 'ancestor_unavailable'); assert.equal(source.documents.length, 1);
+    await db('la_versions').where({ id: uploaded.version.id }).update({ parent_id: original.version.id });
+    await db('la_versions').where({ id: original.version.id }).update({ parsed: null, storage_key: 'objects/missing-fixture' });
+    const missing = await buildSource(db, task); assert.equal(missing.comparison, 'ancestor_unreadable'); assert.equal(missing.documents.length, 1);
+  } finally {
+    await handle?.close(); await db?.destroy(); await root.raw(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`); await root.destroy();
+  }
+});

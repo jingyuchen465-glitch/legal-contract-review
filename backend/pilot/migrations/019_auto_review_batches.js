@@ -1,0 +1,71 @@
+exports.up = async db => {
+  await db.schema.createTable('la_auto_review_batches', t => {
+    t.uuid('id').primary();
+    t.uuid('owner_id').notNullable().references('id').inTable('la_users');
+    t.uuid('container_id').notNullable().references('id').inTable('la_contracts');
+    t.uuid('main_contract_id').references('id').inTable('la_contracts');
+    t.uuid('main_review_id').references('id').inTable('la_reviews');
+    t.string('source').notNullable().defaultTo('manual');
+    t.string('source_key').notNullable();
+    t.string('request_hash', 64).notNullable();
+    t.uuid('intake_id').references('id').inTable('la_dingtalk_intakes');
+    t.string('status').notNullable().defaultTo('queued');
+    t.string('stage').notNullable().defaultTo('queued');
+    t.integer('progress').notNullable().defaultTo(0);
+    t.jsonb('background').notNullable().defaultTo('{}');
+    t.jsonb('execution_plan').notNullable().defaultTo('{}');
+    t.jsonb('quality_gate').notNullable().defaultTo('{}');
+    t.jsonb('result').notNullable().defaultTo('{}');
+    t.text('error_message');
+    t.integer('revision').notNullable().defaultTo(1);
+    t.timestamps(true, true);
+    t.unique(['owner_id', 'source_key']);
+    t.index(['owner_id', 'updated_at']);
+    t.index(['status', 'created_at']);
+  });
+  await db.schema.createTable('la_auto_review_batch_documents', t => {
+    t.uuid('id').primary();
+    t.uuid('batch_id').notNullable().references('id').inTable('la_auto_review_batches');
+    t.uuid('intake_document_id').references('id').inTable('la_intake_documents');
+    t.uuid('contract_id').references('id').inTable('la_contracts');
+    t.uuid('version_id').references('id').inTable('la_versions');
+    t.string('filename').notNullable();
+    t.string('sha256', 64);
+    t.string('role').notNullable().defaultTo('uncertain');
+    t.decimal('confidence');
+    t.string('ingest_status').notNullable().defaultTo('ready');
+    t.text('error_message');
+    t.timestamps(true, true);
+    t.unique(['batch_id', 'version_id']);
+    t.index(['batch_id', 'role']);
+  });
+  await db.schema.createTable('la_auto_review_batch_events', t => {
+    t.bigIncrements('id');
+    t.uuid('batch_id').notNullable().references('id').inTable('la_auto_review_batches');
+    t.string('type').notNullable();
+    t.string('stage').notNullable();
+    t.jsonb('data').notNullable().defaultTo('{}');
+    t.timestamp('created_at').notNullable().defaultTo(db.fn.now());
+    t.index(['batch_id', 'id']);
+  });
+  await db.schema.createTable('la_auto_review_artifacts', t => {
+    t.uuid('id').primary();
+    t.uuid('batch_id').notNullable().references('id').inTable('la_auto_review_batches');
+    t.uuid('batch_document_id').references('id').inTable('la_auto_review_batch_documents');
+    t.uuid('review_id').references('id').inTable('la_reviews');
+    t.uuid('version_id').references('id').inTable('la_versions');
+    t.uuid('source_version_id').references('id').inTable('la_versions');
+    t.string('kind').notNullable();
+    t.string('status').notNullable().defaultTo('ready');
+    t.string('filename').notNullable();
+    t.jsonb('located_finding_ids').notNullable().defaultTo('[]');
+    t.jsonb('unlocated_finding_ids').notNullable().defaultTo('[]');
+    t.text('error_message');
+    t.jsonb('details').notNullable().defaultTo('{}');
+    t.timestamps(true, true);
+    t.index(['batch_id', 'created_at']);
+    t.unique(['batch_id', 'review_id', 'batch_document_id']);
+  });
+};
+
+exports.down = async () => { throw new Error('自动评审批次数据必须保留；请从已验证备份恢复。'); };

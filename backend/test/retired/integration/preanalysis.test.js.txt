@@ -1,0 +1,147 @@
+const { test, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const path = require('node:path');
+const supertest = require('supertest');
+const AdmZip = require('adm-zip');
+const { config } = require('../../pilot/config');
+const { createDb } = require('../../pilot/db');
+const { migrate } = require('../../pilot/cli');
+const { createApp } = require('../../pilot/app');
+const { hashPassword } = require('../../pilot/auth');
+const { processPreanalysis, recoverInterruptedPreanalyses } = require('../../pilot/preanalysis');
+const { processReview } = require('../../pilot/workflow');
+const { createQueue } = require('../../pilot/queue');
+let root, db, database, handle, queue, owner, outsider, business, csrf, otherCsrf, businessCsrf, item;
+const text = '虚构设备采购合同。甲方：虚构采购有限公司。乙方：虚构供货有限公司。交付期限另行协商，验收后付款。';
+function docx(value = text) { const zip = new AdmZip(); zip.addFile('word/document.xml', Buffer.from(`<w:document xmlns:w="urn:word"><w:body><w:p><w:r><w:t>${value}</w:t></w:r></w:p></w:body></w:document>`)); return zip.toBuffer(); }
+let formalCalls = [];
+const gateway = {
+  classify: async d => ({ typeId: 'procurement', tags: [], evidence: [{ blockId: d.blocks[0].id, quote: '虚构设备采购合同' }], uncertain: false }),
+  preAnalyze: async d => ({ contractType: '设备采购与验收合同', parties: ['虚构采购有限公司', '虚构供货有限公司'].map((name, i) => ({ name, label: i ? '乙方' : '甲方', role: i ? '供货方' : '采购方', evidence: [{ blockId: d.blocks[0].id, quote: name }] })), reviewPoints: [{ title: '本合同的交付期限', instruction: '核查具体交付日期及迟延责任', evidence: [{ blockId: d.blocks[0].id, quote: '交付期限另行协商' }] }], corePurposes: ['确保按期交货并完成验收'] }),
+  review: async (d, rules, knowledge, background) => { formalCalls.push({ rules, background }); return { checks: rules.map(r => ({ ruleId: r.id, title: r.title, status: 'uncertain', kind: 'uncertain', severity: 'medium', reason: '工程测试：待双方明确日期', suggestion: '在交付期限条款中补充双方确认的交货日期。', evidence: [{ blockId: d.blocks[0].id, quote: '交付期限另行协商' }], legalRefIds: [] })), coverage: { totalRules: rules.length, checkedRules: rules.length, complete: true } }; },
+};
+before(async () => {
+  root = createDb(); database = 'legal_test_preanalysis_' + randomUUID().replaceAll('-', ''); await root.raw(`CREATE DATABASE "${database}"`);
+  const url = new URL(config.databaseUrl); url.pathname = '/' + database; config.databaseUrl = url.href; config.dataRoot = path.resolve(__dirname, '../../../.local/test-data', database);
+  db = createDb(); await migrate(db); await require('../../pilot/storage').initializeDirectories(); handle = createApp(db);
+  async function login(name, roles) {
+    await db('la_users').insert({ id: randomUUID(), username: name, display_name: name, department: name, roles: JSON.stringify(roles), password_hash: await hashPassword('fixture-only-password-1234') });
+    const agent = supertest.agent(handle.app), session = await agent.get('/api/auth/session');
+    const signed = await agent.post('/api/auth/login').set('X-CSRF-Token', session.body.csrf).send({ username: name, password: 'fixture-only-password-1234' }).expect(200);
+    return [agent, signed.body.csrf];
+  }
+  [owner, csrf] = await login('admin', ['admin']); [outsider, otherCsrf] = await login('outsider', ['business']); [business, businessCsrf] = await login('business', ['business']);
+});
+after(async () => { await queue?.stop(); await handle?.close(); await db?.destroy(); if (root && database) { await root.raw('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ? AND pid <> pg_backend_pid()', [database]); await root.raw(`DROP DATABASE "${database}"`); } await root?.destroy(); });
+async function upload(agent = owner, token = csrf) { return (await agent.post('/api/contracts/upload').set('X-CSRF-Token', token).field('reviewFlow', 'guided').attach('file', docx(), '虚构预分析合同.docx').expect(201)).body; }
+const get = async entry => (await owner.get(`/api/contracts/${entry.contract.id}`).expect(200)).body;
+function selection(c) { const j = c.preanalysis, t = j.result.templates.find(t => t.id === j.result.templateId); return { partyId: j.result.parties[1].id, typeId: 'procurement', templateId: t.id, pointIds: [t.points[0].id, j.result.suggestedPoints[0].id], corePurposes: ['确保明确交付日期', '控制我方供货责任'] }; }
+const start = (c, value, agent = owner, token = csrf) => agent.post(`/api/preanalyses/${c.preanalysis.id}/start`).set('X-CSRF-Token', token).send({ revision: c.preanalysis.revision, contractRevision: c.revision, selection: value });
+test('upload immediately persists only a preanalysis outbox; no background fields or formal review are required', async () => {
+  item = await upload(); assert.ok(item.preanalysisId); assert.equal(item.reviewId, undefined);
+  assert.equal((await db('la_reviews')).length, 0); assert.equal(formalCalls.length, 0);
+  assert.equal((await db('la_outbox').whereRaw("payload->>'preanalysisId' = ?", [item.preanalysisId]).first()).queue, 'preanalysis');
+  let c = await get(item); assert.equal(c.preanalysis.status, 'queued'); assert.equal(c.preanalysis.snapshot, undefined);
+  await owner.post(`/api/contracts/${c.id}/preanalysis`).set('X-CSRF-Token', csrf).send({ revision: 1 }).expect(202).expect(res => assert.equal(res.body.preanalysisId, item.preanalysisId));
+  await owner.post(`/api/preanalyses/${item.preanalysisId}/start`).send({}).expect(403);
+  await start(c, { partyId: 'not-ready' }).expect(409);
+  await processPreanalysis(db, item.preanalysisId, { gateway }); c = await get(item);
+  assert.equal(c.preanalysis.status, 'ready'); assert.equal(c.preanalysis.result.parties[0].name, '虚构采购有限公司');
+  assert.ok(c.versions[0].parsed.blocks.length); assert.equal((await db('la_reviews')).length, 0); assert.equal(formalCalls.length, 0);
+  const list = (await owner.get('/api/contracts')).body.find(x => x.id === c.id); assert.equal(list.preanalysis.status, 'ready'); assert.equal(list.review, null);
+});
+test('draft selection survives another session read; invalid points, parties, blank purposes and outsiders are rejected', async () => {
+  let c = await get(item), value = selection(c);
+  await outsider.patch(`/api/preanalyses/${c.preanalysis.id}/selection`).set('X-CSRF-Token', otherCsrf).send({ revision: c.preanalysis.revision, selection: value }).expect(404);
+  await outsider.get(`/api/contracts/${c.id}`).expect(404);
+  await start(c, { ...value, pointIds: ['invented-rule'] }).expect(400);
+  await start(c, { ...value, partyId: 'invented-party' }).expect(400);
+  await start(c, { ...value, corePurposes: ['  '] }).expect(400);
+  const saved = await owner.patch(`/api/preanalyses/${c.preanalysis.id}/selection`).set('X-CSRF-Token', csrf).send({ revision: c.preanalysis.revision, selection: value }).expect(200);
+  c = await get(item); assert.deepEqual(c.preanalysis.selection, value); assert.equal(c.preanalysis.revision, saved.body.revision);
+  await owner.patch(`/api/preanalyses/${c.preanalysis.id}/selection`).set('X-CSRF-Token', csrf).send({ revision: c.preanalysis.revision - 1, selection: value }).expect(409);
+});
+test('confirmation pins the chosen party, purposes, and exact checks; duplicate starts create one review and later edits cannot rewrite it', async () => {
+  let c = await get(item), value = selection(c), created = await start(c, value).expect(202);
+  const reviewId = created.body.reviewId;
+  await start(c, { ...value, corePurposes: ['duplicate cannot change snapshot'] }).expect(202).expect(res => assert.equal(res.body.reviewId, reviewId));
+  const run = await db('la_reviews').where({ id: reviewId }).first(); assert.deepEqual(run.snapshot.reviewSetup.rules.map(r => r.id), value.pointIds);
+  assert.equal(run.snapshot.background.ourEntity, '虚构供货有限公司'); assert.match(run.snapshot.background.perspective, /供货方/);
+  assert.equal((await db('la_reviews').where({ contract_id: c.id })).length, 1);
+  await processReview(db, reviewId, { gateway });
+  assert.deepEqual(formalCalls.at(-1).rules.map(r => r.id), value.pointIds); assert.deepEqual(formalCalls.at(-1).background.corePurposes, value.corePurposes);
+  assert.equal((await db('la_findings').where({ review_id: reviewId })).length, 2);
+  c = await get(item); assert.equal(c.preanalysis.status, 'submitted'); assert.equal(c.legal_status, 'pending_review');
+  await owner.patch(`/api/preanalyses/${c.preanalysis.id}/selection`).set('X-CSRF-Token', csrf).send({ revision: c.preanalysis.revision, selection: value }).expect(409);
+});
+test('new contract versions invalidate old setup and preserve historical reports', async () => {
+  const c = await get(item), oldReview = c.current_review_id;
+  const next = (await owner.post(`/api/contracts/${c.id}/versions`).set('X-CSRF-Token', csrf).field('revision', c.revision).attach('file', docx(text + '修订：交货日为12月1日。'), '新版合同.docx').expect(201)).body;
+  assert.ok(next.preanalysisId); assert.equal(next.reviewId, undefined);
+  await start(c, selection(c)).expect(409);
+  assert.equal((await db('la_reviews').where({ id: oldReview }).first()).status, 'completed');
+  assert.equal((await get(item)).current_preanalysis_id, next.preanalysisId);
+  await processPreanalysis(db, next.preanalysisId, { gateway });
+});
+test('business users may prepare selections but only legal can start; missing subjects can be explicitly supplied', async () => {
+  const entry = await upload(business, businessCsrf); await processPreanalysis(db, entry.preanalysisId, { gateway: { ...gateway, preAnalyze: async d => ({ ...await gateway.preAnalyze(d), parties: [] }) } });
+  const c = await get(entry), value = { ...selection({ ...c, preanalysis: { ...c.preanalysis, result: { ...c.preanalysis.result, parties: [{ id: 'placeholder' }, { id: 'placeholder' }] } } }), partyId: 'custom', customParty: { name: '人工核实的虚构签约方', role: '购买方' } };
+  await business.patch(`/api/preanalyses/${c.preanalysis.id}/selection`).set('X-CSRF-Token', businessCsrf).send({ revision: c.preanalysis.revision, selection: value }).expect(200);
+  await start(await get(entry), value, business, businessCsrf).expect(403);
+  const formal = await start(await get(entry), value).expect(202);
+  assert.equal((await db('la_reviews').where({ id: formal.body.reviewId }).first()).snapshot.background.ourEntity, value.customParty.name);
+});
+test('failures remain incomplete and can be requeued without modifying the original file', async () => {
+  const entry = await upload(); await processPreanalysis(db, entry.preanalysisId, { gateway: { ...gateway, preAnalyze: async () => { throw Error('fixture failure'); } } });
+  let c = await get(entry); assert.equal(c.preanalysis.status, 'failed'); assert.equal(c.preanalysis.result, null); assert.equal(c.current_review_id, null);
+  const next = await owner.post(`/api/contracts/${c.id}/preanalysis`).set('X-CSRF-Token', csrf).send({ revision: c.revision }).expect(202);
+  assert.notEqual(next.body.preanalysisId, entry.preanalysisId);
+  await processPreanalysis(db, next.body.preanalysisId, { gateway }); c = await get(entry);
+  assert.equal(c.preanalysis.status, 'ready'); assert.equal(c.current_version_id, entry.version.id);
+});
+test('worker restart requeues interrupted attempts, preserves their snapshots, and leaves live workers alone', async () => {
+  const entry = await upload(), id = entry.preanalysisId;
+  await db('la_outbox').whereRaw("payload->>'preanalysisId' = ?", [id]).update({ sent_at: db.fn.now() });
+  await db('la_preanalyses').where({ id }).update({ status: 'running', stage: 'identifying', progress: 50 });
+  const snapshot = (await db('la_preanalyses').where({ id }).first()).snapshot;
+  const connection = await db.client.acquireConnection();
+  try {
+    await db.raw('SELECT pg_advisory_lock(hashtext(?))', [`preanalysis:${id}`]).connection(connection);
+    assert.equal(await recoverInterruptedPreanalyses(db), 0);
+    assert.equal((await db('la_preanalyses').where({ id }).first()).status, 'running');
+  } finally { await db.raw('SELECT pg_advisory_unlock(hashtext(?))', [`preanalysis:${id}`]).connection(connection); await db.client.releaseConnection(connection); }
+  assert.equal(await recoverInterruptedPreanalyses(db), 1);
+  assert.equal(await recoverInterruptedPreanalyses(db), 0);
+  const recovered = await db('la_preanalyses').where({ id }).first();
+  assert.equal(recovered.status, 'queued'); assert.deepEqual(recovered.snapshot, snapshot);
+  assert.equal((await db('la_outbox').whereNull('sent_at').whereRaw("payload->>'preanalysisId' = ?", [id])).length, 1);
+  await processPreanalysis(db, id, { gateway }); assert.equal((await get(entry)).preanalysis.status, 'ready');
+});
+test('Office conversion proceeds independently while AI slots are occupied and HTTP remains responsive', async () => {
+  const entries = [await upload(), await upload()]; let count = 0, release;
+  const gate = new Promise(resolve => { release = resolve; });
+  // Earlier fixtures have no queued work: only these two jobs are dispatched.
+  await db('la_outbox').whereNull('sent_at').whereNotIn(db.raw("payload->>'preanalysisId'"), entries.map(x => x.preanalysisId)).update({ sent_at: db.fn.now() });
+  await db('la_outbox').whereNull('sent_at').where({ queue: 'review' }).update({ sent_at: db.fn.now() });
+  let conversions = 0;
+  const converted = new AdmZip();
+  converted.addFile('manifest.json', Buffer.from(JSON.stringify({ version: 1, sourceExtension: '.xlsx', notes: [], warnings: [], document: { parserVersion: 'converter-test', format: 'spreadsheet', blocks: [{ id: 'b1', text, kind: 'table_cell', source: 'spreadsheet', page: null }], sheets: [{ name: '采购清单', state: 'visible' }], requiresHumanVerification: true, warnings: [] } })));
+  converted.addFile('preview.pdf', Buffer.from('%PDF-1.4\n% fixture'));
+  queue = await createQueue(db, { conversionOptions: { convert: async () => { conversions++; return converted.toBuffer(); } }, preanalysisOptions: { gateway: { ...gateway, preAnalyze: async d => { count++; await gate; return gateway.preAnalyze(d); } } }, reviewOptions: { gateway } });
+  const wait = async predicate => { const until = Date.now() + 12000; while (!await predicate()) { if (Date.now() > until) throw Error('queue timeout'); await new Promise(resolve => setTimeout(resolve, 40)); } };
+  try {
+    await wait(() => count >= 2);
+    const started = Date.now(); await owner.get('/api/contracts').expect(200); assert.ok(Date.now() - started < 2000);
+    for (const entry of entries) assert.equal((await get(entry)).preanalysis.status, 'running');
+    const workbook = new AdmZip(); workbook.addFile('xl/workbook.xml', Buffer.from('<workbook/>'));
+    const office = (await owner.post('/api/contracts/upload').set('X-CSRF-Token', csrf).field('reviewFlow', 'guided').attach('file', workbook.toBuffer(), '后台转换.xlsx').expect(201)).body;
+    entries.push(office);
+    await wait(async () => !!(await db('la_versions').where({ id: office.version.id }).first()).parsed);
+    const version = await db('la_versions').where({ id: office.version.id }).first();
+    assert.equal(version.conversion.status, 'completed'); assert.equal(conversions, 1);
+    assert.equal((await get(office)).preanalysis.status, 'queued'); assert.equal(count, 2);
+  } finally { release(); }
+  await wait(async () => (await Promise.all(entries.map(get))).every(c => c.preanalysis.status === 'ready'));
+  for (const entry of entries) assert.equal((await get(entry)).current_review_id, null);
+});

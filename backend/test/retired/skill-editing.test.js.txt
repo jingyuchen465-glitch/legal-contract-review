@@ -1,0 +1,164 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { randomUUID } = require('node:crypto');
+const vue = require('vue');
+const { parse, compileScript, compileTemplate } = require('@vue/compiler-sfc');
+const { transformSync } = require('esbuild');
+
+// Execute the actual SFC setup and template. This is a component test, not a browser test.
+function component(name, api = async url => url === '/catalog' ? { categories: [] } : [], props = {}) {
+  const file = path.resolve(__dirname, '../../frontend/src/pilot', name + '.vue');
+  const { descriptor } = parse(fs.readFileSync(file, 'utf8'), { filename: file });
+  const script = compileScript(descriptor, { id: name });
+  const template = compileTemplate({ source: descriptor.template.content, filename: file, id: name, compilerOptions: { bindingMetadata: script.bindings } });
+  assert.deepEqual(template.errors, []);
+  const listeners = new Map(), mounted = [], unmounted = [], guards = {}, scope = vue.effectScope();
+  const win = { confirm: () => false, addEventListener: (event, fn) => listeners.set(event, fn), removeEventListener: (event, fn) => { if (listeners.get(event) === fn) listeners.delete(event); } };
+  const imports = { vue: { ...vue, onMounted: fn => mounted.push(fn), onUnmounted: fn => unmounted.push(fn), onBeforeUnmount: fn => unmounted.push(fn), resolveComponent: name => name, withDirectives: node => node }, 'vue-router': { useRoute: () => ({ query: {} }), onBeforeRouteLeave: fn => { guards.leave = fn; }, onBeforeRouteUpdate: fn => { guards.update = fn; } }, './api': { api, role: () => true, label: x => x, time: x => x } };
+  function evaluate(source) { const module = { exports: {} }; new Function('require', 'module', 'exports', 'window', 'crypto', transformSync(source, { format: 'cjs', loader: 'js' }).code)(id => {
+    if (imports[id]) return imports[id];
+    const dependency = path.resolve(path.dirname(file), id);
+    assert.ok(id.startsWith('./') && /\.(vue|mjs)$/.test(id), id);
+    if (id.endsWith('.mjs')) return evaluate(fs.readFileSync(dependency, 'utf8'));
+    const { descriptor: child } = parse(fs.readFileSync(dependency, 'utf8'), { filename: dependency });
+    const childScript = compileScript(child, { id: dependency });
+    const childTemplate = compileTemplate({ source: child.template.content, filename: dependency, id: dependency, compilerOptions: { bindingMetadata: childScript.bindings } });
+    assert.deepEqual(childTemplate.errors, []);
+    const loaded = evaluate(childScript.content); loaded.default.render = evaluate(childTemplate.code).render; return loaded;
+  }, module, module.exports, win, { randomUUID }); return module.exports; }
+  const compiled = evaluate(script.content).default;
+  const state = scope.run(() => compiled.setup(props, { expose() {}, emit() {} }));
+  mounted.forEach(fn => fn());
+  const render = evaluate(template.code).render;
+  const renderTree = () => render({}, [], props, vue.proxyRefs(state), {}, {});
+  return { state, window: win, listeners, guards, renderTree, cleanup() { unmounted.forEach(fn => fn()); scope.stop(); } };
+}
+function nodes(tree) { return [tree, ...(Array.isArray(tree?.children) ? tree.children.flatMap(nodes) : typeof tree?.children?.default === 'function' ? nodes(tree.children.default()) : [])].flat(); }
+function button(editor, text) { return nodes(editor.renderTree()).find(n => n?.type === 'button' && String(n.children).includes(text)); }
+const pack = id => ({ id, name: '付款审查', state: 'published', scope: { level: 'type', typeIds: ['procurement'] }, skills: [{ id: 'payment', title: '付款起算点', method: '检查验收条件', conditions: [], exclusions: [], examples: [] }], required_rule_versions: [] });
+const proposal = { id: 'proposal', kind: 'skill', title: '付款检查', reason: '人工复核', method: '核对付款起算点', conditions: [], exclusions: [], examples: [] };
+const tick = () => new Promise(resolve => setImmediate(resolve));
+function unload(editor) { let prevented = false; const event = { preventDefault() { prevented = true; } }; editor.listeners.get('beforeunload')?.(event); return prevented; }
+
+test('copying a published skill allows adding methods and saving the new version', async t => {
+  let saved; const editor = component('SkillPacks', async (url, options) => {
+    if (options?.method === 'POST') { saved = options.body; return { ...saved, id: 'v2', state: 'draft', revision: 1 }; }
+    return url === '/catalog' ? { categories: [] } : [];
+  }); t.after(() => editor.cleanup());
+  await editor.state.open(pack('v1'));
+  button(editor, '基于此版创建新草稿').props.onClick();
+  const add = button(editor, '添加方法'); assert.ok(add, 'copy mode must expose Add method');
+  add.props.onClick(); assert.equal(editor.state.form.value.skills.length, 2);
+  const item = editor.state.form.value.skills[1]; item.title = '新增方法'; item.method = '检查验收交付时间';
+  assert.ok(button(editor, '保存为新版本草稿')); await editor.state.save();
+  assert.equal(saved.baseVersionId, 'v1'); assert.equal(saved.skills.length, 2);
+  assert.equal(editor.state.selected.value.id, 'v2'); assert.equal(editor.state.dirty.value, false);
+  editor.state.form.value.skills.splice(0); assert.equal(button(editor, '保存草稿').props.disabled, true);
+});
+
+test('skill edits protect reload, cancel closing and route leave, and clean up listeners', async () => {
+  const editor = component('SkillPacks');
+  try {
+    await editor.state.open(); assert.equal(unload(editor), false);
+    editor.state.form.value.name = '未保存的技能'; assert.equal(unload(editor), true);
+    editor.state.close(); assert.ok(editor.state.form.value);
+    assert.equal(editor.guards.leave(), false);
+    editor.window.confirm = () => true; editor.state.close(); assert.equal(editor.state.form.value, null);
+    assert.equal(unload(editor), false);
+  } finally { editor.cleanup(); }
+  assert.equal(editor.listeners.has('beforeunload'), false);
+});
+
+test('saving a skill locks closing and keeps draft input when the request fails', async t => {
+  let rejectSave; const editor = component('SkillPacks', async (url, options) => {
+    if (options?.method === 'POST') return new Promise((resolve, reject) => { rejectSave = reject; });
+    return url === '/catalog' ? { categories: [] } : [];
+  }); t.after(() => editor.cleanup());
+  await editor.state.open(); editor.state.form.value.name = '保留内容'; editor.window.confirm = () => true;
+  const saving = editor.state.save(); assert.equal(editor.state.busy.value, true);
+  assert.equal(nodes(editor.renderTree()).find(n => n?.props?.class?.includes('editor-fields')).props.disabled, true);
+  editor.state.close(); assert.ok(editor.state.form.value, 'saving draft must remain open');
+  assert.equal(unload(editor), true); assert.equal(editor.guards.leave(), false);
+  rejectSave(new Error('网络中断')); await saving;
+  assert.equal(editor.state.form.value.name, '保留内容'); assert.match(editor.state.error.value, /网络中断/);
+});
+
+test('late skill source responses cannot replace the currently selected version sources', async t => {
+  const pending = {}; const editor = component('SkillPacks', async url => {
+    if (url.includes('/sources')) return new Promise(resolve => { pending[url] = resolve; });
+    return url === '/catalog' ? { categories: [] } : [];
+  }); t.after(() => editor.cleanup());
+  const first = editor.state.open(pack('one')), second = editor.state.open(pack('two'));
+  pending['/skill-pack-versions/two/sources']([{ id: 'two' }]); await second;
+  pending['/skill-pack-versions/one/sources']([{ id: 'one' }]); await first;
+  assert.equal(editor.state.selected.value.id, 'two'); assert.equal(editor.state.sources.value[0].id, 'two');
+});
+
+test('proposal edits protect close, reload and route changes until saved or discarded', t => {
+  const editor = component('LearningTasks'); t.after(() => editor.cleanup());
+  editor.state.edit({ id: 'task', revision: 1 }, proposal); assert.equal(unload(editor), false);
+  editor.state.editing.value.method = '保留未保存的方法';
+  assert.equal(unload(editor), true);
+  const dialog = nodes(editor.renderTree()).find(n => n?.type === 'el-dialog');
+  assert.equal(typeof dialog.props['before-close'], 'function');
+  dialog.props['before-close'](); assert.ok(editor.state.editing.value);
+  assert.equal(editor.guards.leave(), false); assert.equal(editor.guards.update(), false);
+  editor.window.confirm = () => true; dialog.props['before-close'](); assert.equal(editor.state.editing.value, null);
+  assert.equal(unload(editor), false);
+});
+
+test('saving a proposal prevents closing and failed saves retain edited content', async t => {
+  let rejectSave; const editor = component('LearningTasks', async (url, options) => {
+    if (options?.method === 'PUT') return new Promise((resolve, reject) => { rejectSave = reject; });
+    return [];
+  }); t.after(() => editor.cleanup());
+  editor.state.edit({ id: 'task', revision: 1 }, proposal); editor.state.editing.value.method = '未保存方法';
+  const saving = editor.state.save(); editor.window.confirm = () => true;
+  assert.equal(nodes(editor.renderTree()).find(n => n?.props?.class?.includes('editor-fields')).props.disabled, true);
+  const dialog = nodes(editor.renderTree()).find(n => n?.type === 'el-dialog');
+  assert.equal(typeof dialog.props['before-close'], 'function'); dialog.props['before-close']();
+  assert.ok(editor.state.editing.value); assert.equal(unload(editor), true);
+  rejectSave(new Error('保存失败')); await saving;
+  assert.equal(editor.state.editing.value.method, '未保存方法'); assert.match(editor.state.error.value, /保存失败/);
+});
+
+test('latest learning task refresh wins and clears a previous loading error', async t => {
+  let fail = true; const requests = []; const editor = component('LearningTasks', async url => {
+    if (url === '/learning-settings') return { enabled: true };
+    if (fail) throw new Error('读取失败');
+    return new Promise(resolve => requests.push(resolve));
+  }); t.after(() => editor.cleanup());
+  await tick(); assert.match(editor.state.error.value, /读取失败/); fail = false;
+  const first = editor.state.load(), latest = editor.state.load();
+  requests[1]([{ id: 'latest', status: 'completed' }]); await latest;
+  requests[0]([{ id: 'old', status: 'completed' }]); await first;
+  assert.equal(editor.state.tasks.value[0].id, 'latest'); assert.equal(editor.state.error.value, '');
+});
+
+test('saving a proposal successfully closes the editor and removes the unload warning', async t => {
+  let body; const editor = component('LearningTasks', async (url, options) => {
+    if (options?.method === 'PUT') { body = options.body; return { ok: true }; }
+    return [];
+  }); t.after(() => editor.cleanup());
+  editor.state.edit({ id: 'task', revision: 3 }, proposal); editor.state.editing.value.conditions = '验收条件明确\n\n 存在起算日期 ';
+  await editor.state.save(); assert.deepEqual(body.conditions, ['验收条件明确', '存在起算日期']);
+  assert.equal(body.revision, 3); assert.equal(editor.state.editing.value, null); assert.equal(unload(editor), false);
+});
+
+test('accepted contract navigation clears the old proposal while loading the new contract', async t => {
+  const props = vue.reactive({ contractId: 'one', decisionId: 'decision-one' });
+  const editor = component('LearningTasks', async url => url === '/learning-settings' ? { enabled: true } : [{ id: url, status: 'completed' }], props);
+  t.after(() => editor.cleanup()); await tick();
+  editor.state.edit({ id: 'old-task', revision: 1 }, proposal); editor.state.editing.value.method = '即将放弃';
+  assert.equal(editor.guards.update(), false); editor.window.confirm = () => true; assert.equal(editor.guards.update(), true);
+  props.contractId = 'two'; props.decisionId = 'decision-two'; await tick();
+  assert.equal(editor.state.editing.value, null); assert.equal(editor.state.tasks.value[0].id, '/learning-tasks?contractId=two');
+});
+
+test('unmounted proposal editors remove listeners and ignore in-flight refreshes', async () => {
+  let resolveTasks; const editor = component('LearningTasks', async url => url === '/learning-settings' ? { enabled: true } : new Promise(resolve => { resolveTasks = resolve; }));
+  editor.cleanup(); resolveTasks([{ id: 'late', status: 'completed' }]); await tick();
+  assert.equal(editor.listeners.has('beforeunload'), false); assert.deepEqual(editor.state.tasks.value, []);
+});

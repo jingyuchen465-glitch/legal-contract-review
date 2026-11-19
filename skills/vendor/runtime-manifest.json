@@ -1,0 +1,619 @@
+{
+  "version": 1,
+  "profile": "full-dsh",
+  "network": "full",
+  "excludedSkills": [
+    "core-audit-case-citation",
+    "core-verify-statute-validity",
+    "lit-analyze-law-conflict",
+    "lit-counter-adverse-precedent",
+    "lit-criminal-sentencing-calibration",
+    "lit-opponent-background",
+    "lit-search-similar-cases",
+    "nonlit-compliance-obligation-matrix",
+    "nonlit-new-rule-tracking",
+    "nonlit-regulatory-penalty-scan",
+    "zhihe-case-search",
+    "zhihe-law-search"
+  ],
+  "skills": [
+    {
+      "id": "core-claim-evidence-audit",
+      "path": "core-claim-evidence-audit",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/audit_claims.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-administrative-remedy",
+      "path": "lit-administrative-remedy",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/admin_remedy.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-analyze-claim-basis",
+      "path": "lit-analyze-claim-basis",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-analyze-judgment-divergence",
+      "path": "lit-analyze-judgment-divergence",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/analyze_divergence.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-analyze-jurisdiction",
+      "path": "lit-analyze-jurisdiction",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/jurisdiction.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-analyze-limitation",
+      "path": "lit-analyze-limitation",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/limitation.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-assess-case-risk",
+      "path": "lit-assess-case-risk",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-bankruptcy",
+      "path": "lit-bankruptcy",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-build-evidence-list",
+      "path": "lit-build-evidence-list",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/evidence_list.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-build-timeline",
+      "path": "lit-build-timeline",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/timeline.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-case-closing",
+      "path": "lit-case-closing",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-case-intake",
+      "path": "lit-case-intake",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/intake.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-criminal-defense",
+      "path": "lit-criminal-defense",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/criminal_defense.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-cross-examination",
+      "path": "lit-cross-examination",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-draft-appeal",
+      "path": "lit-draft-appeal",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-draft-argument",
+      "path": "lit-draft-argument",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-draft-complaint",
+      "path": "lit-draft-complaint",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-draft-defense",
+      "path": "lit-draft-defense",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-extract-judicial-rules",
+      "path": "lit-extract-judicial-rules",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/extract_opinions.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-labor-dispute",
+      "path": "lit-labor-dispute",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/labor_claims.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-plan-enforcement",
+      "path": "lit-plan-enforcement",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-prepare-hearing",
+      "path": "lit-prepare-hearing",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "lit-shareholder-dispute",
+      "path": "lit-shareholder-dispute",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/shareholder.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-admin-penalty-benchmark",
+      "path": "nonlit-admin-penalty-benchmark",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-assess-china-data",
+      "path": "nonlit-assess-china-data",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [
+        "references/sources.md"
+      ],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-assess-china-investment-access",
+      "path": "nonlit-assess-china-investment-access",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [
+        "references/sources.md"
+      ],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-clause-benchmark",
+      "path": "nonlit-clause-benchmark",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/clause_benchmark.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-corporate-governance",
+      "path": "nonlit-corporate-governance",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-data-compliance",
+      "path": "nonlit-data-compliance",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/data_compliance.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-dd-opinion",
+      "path": "nonlit-dd-opinion",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-draft-china-contracts",
+      "path": "nonlit-draft-china-contracts",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [
+        "references/sources.md"
+      ],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-due-diligence",
+      "path": "nonlit-due-diligence",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/dd_checklist.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-ipo-review",
+      "path": "nonlit-ipo-review",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-labor-compliance",
+      "path": "nonlit-labor-compliance",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-litigation-response",
+      "path": "nonlit-litigation-response",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/litigation_response.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-new-business-review",
+      "path": "nonlit-new-business-review",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/new_business.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-orchestrate-china-business",
+      "path": "nonlit-orchestrate-china-business",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [
+        "references/matter-protocol.md",
+        "references/sources.md"
+      ],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-plan-china-employment",
+      "path": "nonlit-plan-china-employment",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [
+        "references/sources.md"
+      ],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-plan-china-entity",
+      "path": "nonlit-plan-china-entity",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [
+        "references/sources.md"
+      ],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-plan-china-ip",
+      "path": "nonlit-plan-china-ip",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [
+        "references/sources.md"
+      ],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-plan-china-tax-customs-fx",
+      "path": "nonlit-plan-china-tax-customs-fx",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [
+        "references/sources.md"
+      ],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-regulatory-inspection",
+      "path": "nonlit-regulatory-inspection",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/inspection.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-review-contract",
+      "path": "nonlit-review-contract",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/review_contract.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "nonlit-transaction-documents",
+      "path": "nonlit-transaction-documents",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "util-anonymize",
+      "path": "util-anonymize",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/anonymize.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "util-bid-proposal",
+      "path": "util-bid-proposal",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/bid_check.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "util-case-file-index",
+      "path": "util-case-file-index",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/case_file_index.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "util-contract-diff",
+      "path": "util-contract-diff",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/contract_diff.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "util-diagram",
+      "path": "util-diagram",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/diagram.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "util-docx-format",
+      "path": "util-docx-format",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/docx_format.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "util-engagement-proposal",
+      "path": "util-engagement-proposal",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "util-enterprise-service-season",
+      "path": "util-enterprise-service-season",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [
+        "references/platform-playbook.md"
+      ],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "util-legal-calculator",
+      "path": "util-legal-calculator",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/legal_calc.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "util-legal-training",
+      "path": "util-legal-training",
+      "runtimeEnabled": true,
+      "scripts": [
+        "scripts/training.py"
+      ],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "util-legal-translation",
+      "path": "util-legal-translation",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "util-plain-language",
+      "path": "util-plain-language",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "util-research-memo",
+      "path": "util-research-memo",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [],
+      "network": "full",
+      "exclusionReason": null
+    },
+    {
+      "id": "util-run-ciie-legal-demo",
+      "path": "util-run-ciie-legal-demo",
+      "runtimeEnabled": true,
+      "scripts": [],
+      "references": [
+        "references/ciie-runbook.md",
+        "references/sources.md"
+      ],
+      "network": "full",
+      "exclusionReason": null
+    }
+  ]
+}

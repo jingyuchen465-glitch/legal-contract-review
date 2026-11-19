@@ -1,0 +1,41 @@
+{
+  "name": "legal-agent-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "engines": {
+    "node": ">=24.9"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.js",
+    "build": "npm run build --workspace frontend",
+    "start": "npm start --workspace backend",
+    "worker": "npm run worker --workspace backend",
+    "db:migrate": "node backend/pilot/cli.js migrate",
+    "bootstrap": "node backend/pilot/cli.js bootstrap",
+    "seed:demo": "node backend/pilot/cli.js demo",
+    "test": "node --test --test-concurrency=1 backend/test/*.test.js",
+    "test:integration": "AGENT_RUNTIME_ISOLATION=process AGENT_RUNTIME_PROFILE=restricted node --test --test-concurrency=1 backend/test/integration/*.test.js",
+    "db:local": "node scripts/local-postgres.mjs",
+    "setup:local": "node scripts/setup-local.js",
+    "backup": "node scripts/backup.js",
+    "restore": "node scripts/backup.js restore",
+    "openapi": "node scripts/openapi.js",
+    "restore:drill": "node scripts/restore-drill.js",
+    "licenses": "node scripts/license-inventory.js",
+    "harness:build": "node scripts/build-legal-harness.mjs",
+    "test:agent": "node scripts/test-agent.mjs",
+    "test:integration:isolated": "node scripts/test-agent.mjs backend/test/integration/*.test.js",
+    "test:legal-flows": "npm run build && node scripts/test-agent.mjs scripts/qa/legal-flows.cjs",
+    "harness:cutover": "node scripts/cutover-harness.cjs"
+  },
+  "devDependencies": {
+    "embedded-postgres": "18.4.0-beta.17",
+    "esbuild": "^0.25.12",
+    "supertest": "^7.2.2",
+    "tar": "^7.5.9"
+  }
+}

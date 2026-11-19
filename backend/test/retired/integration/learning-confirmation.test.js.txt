@@ -1,0 +1,153 @@
+const { test, before, after } = require('node:test');
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const path = require('node:path');
+const supertest = require('supertest');
+const { config } = require('../../pilot/config');
+const { createDb } = require('../../pilot/db');
+const { migrate } = require('../../pilot/cli');
+const { createApp } = require('../../pilot/app');
+const { hashPassword } = require('../../pilot/auth');
+const { enqueue, processReorganization } = require('../../pilot/learning-reorganizations');
+const { enqueueLearning, processLearning } = require('../../pilot/learning');
+let root, db, database, app, agent, csrf, user;
+const originalFlag = config.learningCatalog.enabled;
+const call = (method, url, body) => agent[method]('/api' + url).set('X-CSRF-Token', csrf).send(body);
+async function fixture(confirmed = false) {
+  const id = randomUUID(), versionId = randomUUID(), reviewId = randomUUID();
+  const classification = { typeId: 'procurement', tags: [], confirmed: true, perspectiveConfirmed: true, versionId };
+  const snapshot = { typeId: 'procurement', classification, background: {}, rulePacks: [], skillPacks: [] };
+  await db('la_contracts').insert({ id, number: 'CONFIRM-' + id, title: '确认门槛回归样本', classification: JSON.stringify(classification) });
+  await db('la_versions').insert({ id: versionId, contract_id: id, version_no: 1, kind: 'contract', filename: 'fixture.docx', storage_key: 'objects/fixture', sha256: 'a'.repeat(64), size: 10, media_type: 'application/docx', source_action: 'fixture', parsed: JSON.stringify({ blocks: [{ id: 'b1', text: '验收后付款。' }] }) });
+  await db('la_reviews').insert({ id: reviewId, contract_id: id, version_id: versionId, status: 'completed', coverage: '{"complete":true}', snapshot: JSON.stringify(snapshot) });
+  await db('la_contracts').where({ id }).update({ current_version_id: versionId, current_review_id: reviewId, legal_status: confirmed ? 'finalized' : 'pending_review' });
+  let decision;
+  if (confirmed) [decision] = await db('la_decisions').insert({ id: randomUUID(), review_id: reviewId, version_id: versionId, decided_by: user.id, outcome: 'agree' }).returning('*');
+  return { contract: await db('la_contracts').where({ id }).first(), run: await db('la_reviews').where({ id: reviewId }).first(), versionId, snapshot, decision };
+}
+async function cachedTask(f, decision = f.decision) {
+  const id = randomUUID();
+  const source = { documents: [{ id: f.versionId, versionNo: 1, blocks: [{ id: 'b1', text: '验收后付款。' }] }], decision: { id: decision.id, outcome: 'agree' }, findings: [], comparison: 'no_previous_version', restrictedTerms: [] };
+  await db('la_learning_tasks').insert({ id, decision_id: decision.id, contract_id: f.contract.id, review_id: f.run.id, version_id: f.versionId, created_by: user.id, snapshot: JSON.stringify(f.snapshot), source: JSON.stringify(source) });
+  return id;
+}
+before(async () => {
+  config.learningCatalog.enabled = true; root = createDb(); database = 'legal_test_confirmation_' + randomUUID().replaceAll('-', '');
+  await root.raw(`CREATE DATABASE "${database}"`); const url = new URL(config.databaseUrl); url.pathname = '/' + database; config.databaseUrl = url.href; config.dataRoot = path.resolve('.local/test-data', database); db = createDb(); await migrate(db); await require('../../pilot/storage').initializeDirectories();
+  user = { id: randomUUID(), username: 'confirmation-legal', display_name: '回归法务', roles: ['admin'] };
+  const password = 'confirmation-fixture-password'; await db('la_users').insert({ ...user, roles: JSON.stringify(user.roles), password_hash: await hashPassword(password) });
+  await db('la_settings').insert({ key: 'contract_learning', value: '{"enabled":true}' });
+  app = createApp(db); agent = supertest.agent(app.app); const session = await agent.get('/api/auth/session');
+  const login = await agent.post('/api/auth/login').set('X-CSRF-Token', session.body.csrf).send({ username: user.username, password }).expect(200); csrf = login.body.csrf;
+});
+after(async () => {
+  config.learningCatalog.enabled = originalFlag; await app?.close(); await db?.destroy();
+  if (root && database) { await root.raw('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ? AND pid <> pg_backend_pid()', [database]); await root.raw(`DROP DATABASE "${database}"`); }
+  await root?.destroy();
+});
+test('unconfirmed AI review and confirmed classification cannot enqueue experience reorganization', async () => {
+  const f = await fixture();
+  await assert.rejects(db.transaction(trx => enqueue(trx, user, f.contract)), e => e.code === 'LEARNING_CONFIRMATION_REQUIRED');
+  const result = await call('post', '/learning-reorganizations', { contractId: f.contract.id }).expect(409);
+  assert.equal(result.body.code, 'LEARNING_CONFIRMATION_REQUIRED');
+  assert.equal((await db('la_learning_reorganizations').where({ contract_id: f.contract.id })).length, 0);
+});
+test('bulk scan includes only matching final decisions and exposes the confirming account and time', async () => {
+  const unconfirmed = await fixture(), finalized = await fixture(true), stale = await fixture(true);
+  await db('la_contracts').where({ id: unconfirmed.contract.id }).update({ legal_status: 'finalized' });
+  const nextVersion = randomUUID(); await db('la_versions').insert({ id: nextVersion, contract_id: stale.contract.id, version_no: 2, kind: 'contract', filename: 'new.docx', storage_key: 'objects/new', sha256: 'b'.repeat(64), size: 10, media_type: 'application/docx', source_action: 'fixture' });
+  await db('la_contracts').where({ id: stale.contract.id }).update({ current_version_id: nextVersion });
+  const response = await call('post', '/learning-reorganizations', {}).expect(202);
+  assert.deepEqual(response.body.map(r => r.contract_id), [finalized.contract.id]);
+  const listed = (await call('get', '/learning-reorganizations').expect(200)).body;
+  const row = listed.find(r => r.contract_id === finalized.contract.id);
+  assert.equal(row.confirmedBy, user.display_name); assert.equal(row.confirmedVersionNo, 1); assert.ok(row.confirmedAt);
+  assert.ok(listed.every(r => r.confirmedBy));
+});
+test('legacy unconfirmed candidates cannot be processed, retried or applied', async () => {
+  const f = await fixture(), id = randomUUID();
+  await db('la_learning_reorganizations').insert({ id, contract_id: f.contract.id, version_id: f.versionId, created_by: user.id, baseline: JSON.stringify({ versionHash: 'a'.repeat(64) }) });
+  let calls = 0; await processReorganization(db, id, { gateway: { classify: async () => { calls++; throw Error('must not classify'); } } });
+  let row = await db('la_learning_reorganizations').where({ id }).first(); assert.equal(row.status, 'failed'); assert.match(row.error_message, /法务.*确认/); assert.equal(calls, 0);
+  await call('post', `/learning-reorganizations/${id}/retry`, {}).expect(409);
+  await db('la_learning_reorganizations').where({ id }).update({ status: 'ready', result: JSON.stringify({ classification: { typeId: 'procurement', tags: [] }, moves: [], taskResults: [] }) });
+  row = await db('la_learning_reorganizations').where({ id }).first(); const result = await call('post', `/learning-reorganizations/${id}/apply`, { revision: row.revision, confirmed: true }).expect(409);
+  assert.equal(result.body.code, 'LEARNING_CONFIRMATION_REQUIRED');
+  assert.ok(!(await call('get', '/learning-reorganizations').expect(200)).body.some(r => r.id === id));
+});
+test('cached experience cannot bypass the persisted matching legal decision', async () => {
+  const unconfirmed = await fixture(), other = await fixture(true), id = await cachedTask(unconfirmed, other.decision); let calls = 0;
+  await processLearning(db, id, { gateway: { distill: async () => { calls++; return []; } } });
+  const task = await db('la_learning_tasks').where({ id }).first(); assert.equal(task.status, 'failed'); assert.equal(task.error_code, 'LEARNING_CONFIRMATION_REQUIRED'); assert.equal(calls, 0);
+  const retry = await call('post', `/learning-tasks/${id}/retry`, { revision: task.revision }).expect(409); assert.equal(retry.body.code, 'LEARNING_CONFIRMATION_REQUIRED');
+  const adopt = await call('post', `/learning-tasks/${id}/proposals/${randomUUID()}/adopt`, { revision: task.revision }).expect(409); assert.equal(adopt.body.code, 'LEARNING_CONFIRMATION_REQUIRED');
+  const draft = await call('post', `/contracts/${unconfirmed.contract.id}/skill-draft`, { tasks: [{ id, revision: task.revision }] }).expect(409); assert.equal(draft.body.code, 'LEARNING_CONFIRMATION_REQUIRED');
+  assert.ok(!(await call('get', '/learning-tasks').expect(200)).body.some(t => t.id === id));
+  assert.ok(!(await call('get', '/learning-proposals?kind=skill').expect(200)).body.activities.some(t => t.id === id));
+  await assert.rejects(db.transaction(trx => enqueueLearning(trx, unconfirmed.contract, unconfirmed.run, other.decision, user)), e => e.code === 'LEARNING_CONFIRMATION_REQUIRED');
+});
+test('confirmed historical versions remain usable for experience after a new draft is uploaded', async () => {
+  const f = await fixture(true), id = await cachedTask(f), nextVersion = randomUUID();
+  await db('la_versions').insert({ id: nextVersion, contract_id: f.contract.id, version_no: 2, kind: 'contract', filename: 'new.docx', storage_key: 'objects/new', sha256: 'b'.repeat(64), size: 10, media_type: 'application/docx', source_action: 'fixture' });
+  await db('la_contracts').where({ id: f.contract.id }).update({ current_version_id: nextVersion, legal_status: 'pending_review' });
+  let calls = 0; await processLearning(db, id, { gateway: { distill: async () => { calls++; return []; } } });
+  const task = await db('la_learning_tasks').where({ id }).first(); assert.equal(task.status, 'no_change', task.error_message); assert.ok(calls > 0);
+});
+test('authorized withdrawal preserves the decision and evidence, pauses its skills, and requires a new legal review', async () => {
+  const { withdrawForReconfirmation } = require('../../pilot/decision-reconfirmation');
+  const { createSkillDraft } = require('../../pilot/skills');
+  const f = await fixture(true), id = await cachedTask(f), originalDecision = await db('la_decisions').where({ id: f.decision.id }).first(), originalTask = await db('la_learning_tasks').where({ id }).first();
+  const pack = await db.transaction(trx => createSkillDraft(trx, { name: '撤回来源样例', scope: { level: 'type', typeIds: ['procurement'] }, skills: [{ id: 'withdraw-check', title: '验收检查', method: '核对验收条件', conditions: [], exclusions: [], examples: [], sourceIds: [id] }] }, user.id));
+  await db('la_skill_versions').where({ id: pack.id }).update({ state: 'published' });
+  const result = await withdrawForReconfirmation(db, user, f.decision.id, '用户明确说明原结论未经法务实际确认，要求重新复核');
+  assert.equal(result.withdrawn, true); assert.equal(result.pausedTasks, 1); assert.equal(result.retiredVersions.length, 1);
+  const current = await db('la_contracts').where({ id: f.contract.id }).first(); assert.equal(current.legal_status, 'pending_review'); assert.equal(current.current_review_id, null); assert.equal(current.current_version_id, f.versionId);
+  assert.deepEqual(await db('la_decisions').where({ id: f.decision.id }).first(), originalDecision);
+  const paused = await db('la_learning_tasks').where({ id }).first(); assert.deepEqual(paused.source, originalTask.source); assert.deepEqual(paused.proposals, originalTask.proposals); assert.equal(paused.status, 'failed');
+  assert.equal((await db('la_skill_versions').where({ id: pack.id }).first()).state, 'retired');
+  assert.equal((await call('get', `/reviews/${f.run.id}`).expect(200)).body.decision.withdrawal.reason, '用户明确说明原结论未经法务实际确认，要求重新复核');
+  assert.equal((await call('get', `/reviews/${f.run.id}/final-contract`).expect(409)).body.code, 'DECISION_WITHDRAWN');
+  const report = await call('get', `/reviews/${f.run.id}/report?format=html`).expect(200); assert.match(report.text, /最终结论已撤回/); assert.ok(!report.text.includes('<b>同意</b>'));
+  await call('post', `/learning-tasks/${id}/retry`, { revision: paused.revision }).expect(409);
+  assert.equal((await withdrawForReconfirmation(db, user, f.decision.id, '重复调用')).idempotent, true);
+  // Copying the old methods into a fresh draft must not bypass withdrawal.
+  const copy = await db.transaction(trx => createSkillDraft(trx, { name: '撤回后复制样例', scope: pack.scope, skills: pack.skills }, user.id));
+  assert.equal((await call('post', `/skill-pack-versions/${copy.id}/submit`, { revision: copy.revision }).expect(409)).body.code, 'LEARNING_CONFIRMATION_REQUIRED');
+  const reviewId = randomUUID(); await db('la_reviews').insert({ id: reviewId, contract_id: f.contract.id, version_id: f.versionId, status: 'completed', coverage: '{"complete":true}', snapshot: JSON.stringify(f.snapshot) });
+  await db('la_contracts').where({ id: f.contract.id }).update({ current_review_id: reviewId });
+  const c = await db('la_contracts').where({ id: f.contract.id }).first();
+  const confirmed = await call('post', `/reviews/${reviewId}/decision`, { revision: c.revision, outcome: 'agree', reason: '法务重新核对后确认' }).expect(201);
+  assert.notEqual(confirmed.body.id, f.decision.id); assert.ok(await db('la_learning_tasks').where({ decision_id: confirmed.body.id }).first());
+  assert.equal((await db('la_decisions').whereIn('id', [f.decision.id, confirmed.body.id])).length, 2);
+});
+
+test('browser distinguishes confirmed sources and works at phone width', { skip: !process.env.LEARNING_CONFIRMATION_BROWSER }, async () => {
+  const { chromium } = require('playwright'), fs = require('node:fs'), path = require('node:path');
+  const server = app.app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
+  const base = 'http://127.0.0.1:' + server.address().port, browser = await chromium.launch({ channel: 'msedge', headless: true });
+  const out = path.resolve('.local/confirmation-gate/browser'); fs.mkdirSync(out, { recursive: true });
+  const errors = [];
+  try {
+    const page = await browser.newPage({ viewport: { width: 1500, height: 1100 } }); page.on('pageerror', e => errors.push(e.message));
+    if (process.env.CONFIRMATION_CANDIDATE_DIST) await page.route('**/*', async route => {
+      const url = new URL(route.request().url()); if (url.origin !== base || url.pathname.startsWith('/api/')) return route.continue();
+      const filename = path.resolve(process.env.CONFIRMATION_CANDIDATE_DIST, '.' + (url.pathname === '/' ? '/index.html' : url.pathname));
+      if (fs.existsSync(filename) && fs.statSync(filename).isFile()) return route.fulfill({ path: filename }); return route.continue();
+    });
+    const session = await (await page.request.get(base + '/api/auth/session')).json();
+    assert.equal((await page.request.post(base + '/api/auth/login', { headers: { 'X-CSRF-Token': session.csrf }, data: { username: user.username, password: 'confirmation-fixture-password' } })).status(), 200);
+    await page.goto(base + '/#/feedback'); await page.getByText('已确认合同的分类与经验整理', { exact: true }).click();
+    await page.getByText('先确认合同结论，再沉淀技能。', { exact: true }).waitFor();
+    const response = await page.request.get(base + '/api/learning-reorganizations'), candidates = await response.json();
+    await page.getByRole('button', { name: '扫描已确认合同，生成整理候选', exact: true }).click();
+    await page.locator('.confirmation-source').first().waitFor();
+    const listed = await (await page.request.get(base + '/api/learning-reorganizations')).json();
+    await page.waitForFunction(count => document.querySelectorAll('.reorganization-row').length === count, listed.length);
+    assert.equal(await page.locator('.reorganization-row').count(), listed.length);
+    for (const row of await page.locator('.reorganization-row').all()) assert.ok(await row.locator('.confirmation-source').getByText('确认账号：回归法务', { exact: true }).isVisible());
+    await page.screenshot({ path: path.join(out, 'confirmed-sources-desktop.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 950 }); assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({ path: path.join(out, 'confirmed-sources-mobile.png'), fullPage: true }); assert.deepEqual(errors, []);
+    fs.writeFileSync(path.join(out, 'result.json'), JSON.stringify({ passed: true, candidateTag: process.env.CONFIRMATION_CANDIDATE_TAG || null, candidateSourcesVerified: true, mobile390: true, errors }));
+  } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
+});

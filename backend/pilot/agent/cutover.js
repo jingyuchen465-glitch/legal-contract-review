@@ -1,0 +1,11 @@
+const {fail}=require('../errors');
+async function retireLegacy(db,{apply=false}={}){
+ const running=await db('la_reviews').whereNot({engine:'harness-v1'}).where({status:'running'}).select('id');
+ const queued=await db('la_reviews').whereNot({engine:'harness-v1'}).whereIn('status',['queued','waiting_input','failed','finalizing']).select('id');
+ const pending=await db('la_outbox').whereNull('sent_at').whereIn('queue',['review','preanalysis','learning','learning-reorganization','evaluation']).select('id','queue');
+ const result={runningLegacy:running.map(r=>r.id),retirableReviews:queued.length,legacyOutbox:pending.length,applied:false};
+ if(!apply)return result;
+ if(running.length)fail(409,'LEGACY_WORKER_DRAIN_REQUIRED','须停止旧任务入队并等待旧 Worker 完成或停机后核对；当前仍有旧审查运行，未执行切换。');
+ await db.transaction(async trx=>{await trx.raw('SELECT pg_advisory_xact_lock(hashtext(?))',['legal-engine-cutover']);if(await trx('la_reviews').whereNot({engine:'harness-v1'}).where({status:'running'}).first())fail(409,'LEGACY_WORKER_DRAIN_REQUIRED','检测到旧审查重新开始，切换已中止');await trx('la_reviews').whereIn('id',queued.map(r=>r.id)).update({status:'cancelled',stage:'engine_retired',error_code:'REVIEW_ENGINE_RETIRED',error_message:'旧引擎已退役，历史材料保留，可创建 Agent 审查。',updated_at:trx.fn.now()});await trx('la_preanalyses').whereIn('status',['queued','running','ready']).update({status:'superseded',error_code:'REVIEW_ENGINE_RETIRED',error_message:'独立预分析已退役',updated_at:trx.fn.now()});await trx('la_learning_tasks').whereIn('status',['queued','running']).update({status:'failed',error_code:'REVIEW_ENGINE_RETIRED',error_message:'旧经验发布流程已退役',updated_at:trx.fn.now()});await trx('la_evaluations').whereIn('status',['queued','running']).update({status:'failed',result:JSON.stringify({code:'REVIEW_ENGINE_RETIRED',message:'规则编号评测已退役，历史结果保留。'})});await trx('la_outbox').whereIn('id',pending.map(p=>p.id)).update({sent_at:trx.fn.now(),retired_at:trx.fn.now(),retired_reason:'REVIEW_ENGINE_RETIRED'});await trx('la_settings').insert({key:'review_engine',value:JSON.stringify({engine:'harness-v1',cutoverAt:new Date().toISOString()})}).onConflict('key').merge({value:JSON.stringify({engine:'harness-v1',cutoverAt:new Date().toISOString()}),updated_at:trx.fn.now()});});return {...result,applied:true};
+}
+module.exports={retireLegacy};

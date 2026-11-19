@@ -1,0 +1,75 @@
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const { validateExperience } = require('../pilot/learning');
+const { createGateway } = require('../pilot/model');
+const { config } = require('../pilot/config');
+const version = randomUUID();
+const context = { blocks: [{ versionId: version, sourceBlockId: 'b1', text: '转租应取得出租方书面同意。' }], findings: [], snapshot: { typeId: 'other', skillPacks: [], rulePacks: [] }, restrictedTerms: ['转租承租方', '虚构承租方有限公司', 'PRIVATE-CONTRACT-123'] };
+const proposal = () => ({ key: 'p1', kind: 'skill', title: '转租授权核对', reason: '对照授权条款', method: '核对转租承租方是否取得出租方书面同意。', evidence: [{ versionId: version, blockId: 'b1', quote: context.blocks[0].text }] });
+
+test('cached role terms are allowed while real names, contract identifiers and contacts remain blocked', () => {
+  for (const role of ['转租承租方', '合同所列出租方', '次承租方', '【我方】', 'Subtenant']) {
+    assert.equal(validateExperience({ proposals: [{ ...proposal(), method: `核对${role}的转租授权。` }] }, { ...context, restrictedTerms: [...context.restrictedTerms, role] }).length, 1);
+  }
+  for (const value of ['虚构承租方有限公司', 'PRIVATE-CONTRACT-123', 'private@example.com', '13812345678']) {
+    assert.throws(() => validateExperience({ proposals: [{ ...proposal(), examples: [`联系${value}核实授权。`] }] }, context), e => {
+      assert.equal(e.code, 'LEARNING_OUTPUT_INVALID');
+      assert.equal(e.diagnostics.issues[0].path, 'proposals.0.examples.0');
+      assert.ok(['contract_specific_name', 'contact_information'].includes(e.diagnostics.issues[0].reason));
+      assert.ok(!JSON.stringify(e.diagnostics).includes(value));
+      return true;
+    });
+  }
+  // Literal evidence remains unchanged and may contain the original name.
+  const quote = '虚构承租方有限公司申请转租。';
+  assert.equal(validateExperience({ proposals: [{ ...proposal(), evidence: [{ versionId: version, blockId: 'b1', quote }] }] }, { ...context, blocks: [{ ...context.blocks[0], text: quote }] }).length, 1);
+});
+
+test('learning corrections identify the failing field, retain the previous result and do not log private output', async () => {
+  const saved = { ...config.model };
+  Object.assign(config.model, { baseUrl: 'http://localhost:9999/v1', name: 'learning-regression', key: 'fixture-only' });
+  try {
+    const inputs = [], traces = [];
+    const invalid = { ...proposal(), method: '核对虚构承租方有限公司的转租授权。' };
+    const gateway = createGateway(null, { fetchImpl: async (_, request) => {
+      const input = JSON.parse(JSON.parse(request.body).messages[1].content); inputs.push(input);
+      return Response.json({ choices: [{ message: { content: JSON.stringify({ proposals: [inputs.length === 1 ? invalid : proposal()] }) } }] });
+    } });
+    const result = await gateway.distill({ blocks: context.blocks, chunkIndex: 1, chunkCount: 1 }, t => traces.push(t), raw => validateExperience(raw, context));
+    assert.equal(result.length, 1); assert.equal(inputs.length, 2);
+    assert.equal(inputs[1].validationFeedback.issues[0].path, 'proposals.0.method');
+    assert.equal(inputs[1].validationFeedback.issues[0].reason, 'contract_specific_name');
+    assert.equal(inputs[1].validationFeedback.previousResult.proposals[0].method, invalid.method);
+    assert.ok(!JSON.stringify(traces).includes('虚构承租方有限公司'));
+    assert.ok(traces.some(t => t.label === 'learning_validation' && t.issues[0].path === 'proposals.0.method'));
+  } finally { Object.assign(config.model, saved); }
+});
+
+test('privacy diagnostics identify every reusable field and schema errors never echo invalid values', () => {
+  for (const field of ['title', 'method', 'instruction', 'conditions', 'exclusions', 'examples']) {
+    const value = '虚构承租方有限公司';
+    const array = ['conditions', 'exclusions', 'examples'].includes(field);
+    assert.throws(() => validateExperience({ proposals: [{ ...proposal(), [field]: array ? [value] : value }] }, context), e => {
+      assert.equal(e.diagnostics.issues[0].path, `proposals.0.${field}${array ? '.0' : ''}`); return true;
+    });
+  }
+  assert.throws(() => validateExperience({ proposals: [{ ...proposal(), kind: 'PRIVATE_INVALID_VALUE' }] }, context), e => {
+    assert.equal(e.diagnostics.issues[0].path, 'proposals.0.kind');
+    assert.ok(!JSON.stringify(e.diagnostics).includes('PRIVATE_INVALID_VALUE')); return true;
+  });
+});
+
+test('learning correction exhaustion names the failed process without invalidating the completed review', async () => {
+  const saved = { ...config.model };
+  Object.assign(config.model, { baseUrl: 'http://localhost:9999/v1', name: 'learning-regression', key: 'fixture-only' });
+  try {
+    let count = 0;
+    const gateway = createGateway(null, { fetchImpl: async () => { count++; return Response.json({ choices: [{ message: { content: JSON.stringify({ proposals: [{ ...proposal(), method: '联系private@example.com' }] }) } }] }); } });
+    await assert.rejects(() => gateway.distill({ blocks: context.blocks }, null, raw => validateExperience(raw, context)), e => {
+      assert.match(e.message, /经验整理/); assert.match(e.message, /不影响已完成的预审和法务结论/);
+      assert.doesNotMatch(e.message, /没有生成完整预审结果/); return true;
+    });
+    assert.equal(count, 3);
+  } finally { Object.assign(config.model, saved); }
+});
